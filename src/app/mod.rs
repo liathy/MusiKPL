@@ -11,7 +11,7 @@ use crate::{
     theme::Theme,
     ui::footer::{show as render_footer, FooterState},
     ui::screens::{show_header, show_home, show_queue_panel, HomeAction, QueueAction},
-    ui::{icons::IconTextures, layout::responsive_layout},
+    ui::{icons::IconTextures, layout::responsive_layout, responsive::ResponsiveUi},
 };
 use eframe::egui;
 use std::{
@@ -87,7 +87,12 @@ impl Default for YtMusicApp {
 }
 
 impl YtMusicApp {
-    fn render_full_width_footer(&mut self, ctx: &egui::Context, icons: &IconTextures) {
+    fn render_full_width_footer(
+        &mut self,
+        ctx: &egui::Context,
+        icons: &IconTextures,
+        responsive: &ResponsiveUi,
+    ) {
         let duration = self
             .current
             .as_ref()
@@ -110,6 +115,7 @@ impl YtMusicApp {
                 volume: self.player.volume,
                 guest,
             },
+            responsive,
         );
 
         for action in actions {
@@ -414,8 +420,8 @@ impl YtMusicApp {
         };
         let theme = Theme::default();
         let viewport = ctx.available_rect().size();
-        let unit = (viewport.x / 120.0).clamp(12.0, 16.0);
-        let layout = responsive_layout(viewport.x, viewport.y, unit);
+        let responsive = ResponsiveUi::from_size(viewport);
+        let layout = responsive_layout(viewport, &responsive);
         let raised = theme.raised;
         let muted = theme.secondary_text;
         let accent = theme.accent;
@@ -425,10 +431,10 @@ impl YtMusicApp {
         let sidebar_width = layout.sidebar_width;
         let queue_width = layout.queue_width;
 
-        if show_header(ctx, header_height, &mut self.search, raised) {
+        if show_header(ctx, header_height, &mut self.search, raised, &responsive) {
             self.search();
         }
-        self.render_full_width_footer(ctx, &icons);
+        self.render_full_width_footer(ctx, &icons, &responsive);
 
         if show_sidebar {
             egui::SidePanel::left("app_sidebar")
@@ -539,7 +545,13 @@ impl YtMusicApp {
 
         if show_queue {
             let queue_snapshot: Vec<Track> = self.queue.iter().cloned().collect();
-            for action in show_queue_panel(ctx, queue_width, self.auto_mix, &queue_snapshot) {
+            for action in show_queue_panel(
+                ctx,
+                queue_width,
+                self.auto_mix,
+                &queue_snapshot,
+                &responsive,
+            ) {
                 match action {
                     QueueAction::Play(track) => {
                         self.queue.remove_id(&track.id);
@@ -551,7 +563,13 @@ impl YtMusicApp {
                 }
             }
         }
-        let home_actions = show_home(ctx, &icons, self.current.as_ref(), &self.results);
+        let home_actions = show_home(
+            ctx,
+            &icons,
+            self.current.as_ref(),
+            &self.results,
+            &responsive,
+        );
         for action in home_actions {
             match action {
                 HomeAction::PlaySearch(track) => self.play_search_track(track),

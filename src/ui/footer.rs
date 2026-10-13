@@ -1,7 +1,7 @@
 use crate::{
     domain::{format_duration, format_position, Track},
     theme::Theme,
-    ui::{icons::*, layout::*},
+    ui::{icons::*, layout::*, responsive::ResponsiveUi},
 };
 use eframe::egui;
 
@@ -27,11 +27,9 @@ pub(crate) fn show(
     ctx: &egui::Context,
     icons: &IconTextures,
     state: FooterState<'_>,
+    responsive: &ResponsiveUi,
 ) -> Vec<FooterAction> {
     let theme = Theme::default();
-    let available = ctx.available_rect().size();
-    let unit = (available.x / 120.0).clamp(12.0, 16.0);
-    let footer_height = responsive_layout(available.x, available.y, unit).footer_height;
     let mut actions = Vec::new();
 
     egui::TopBottomPanel::bottom("app_footer")
@@ -40,7 +38,7 @@ pub(crate) fn show(
                 .fill(egui::Color32::BLACK)
                 .inner_margin(0.0),
         )
-        .exact_height(footer_height)
+        .exact_height(responsive.player_footer_height)
         .show(ctx, |ui| {
             egui::Frame::none()
                 .fill(egui::Color32::BLACK)
@@ -51,8 +49,8 @@ pub(crate) fn show(
                         [footer_rect.left_top(), footer_rect.right_top()],
                         egui::Stroke::new(1.0_f32, theme.border),
                     );
-                    let geometry = footer_geometry(footer_rect);
-                    let padding = footer_padding(footer_rect.width());
+                    let geometry = footer_geometry(footer_rect, responsive);
+                    let padding = footer_padding(footer_rect.width(), responsive);
 
                     ui.allocate_new_ui(
                         egui::UiBuilder::new()
@@ -66,6 +64,7 @@ pub(crate) fn show(
                                 icons,
                                 state.current,
                                 theme,
+                                responsive,
                             );
                             render_playback(
                                 ui,
@@ -77,6 +76,7 @@ pub(crate) fn show(
                                 state.duration,
                                 state.guest,
                                 theme,
+                                responsive,
                                 &mut actions,
                             );
                             render_volume(
@@ -85,6 +85,7 @@ pub(crate) fn show(
                                 padding,
                                 state.volume,
                                 theme,
+                                responsive,
                                 &mut actions,
                             );
                         },
@@ -102,6 +103,7 @@ fn render_track_info(
     icons: &IconTextures,
     current: Option<&Track>,
     theme: Theme,
+    responsive: &ResponsiveUi,
 ) {
     if rect.width() <= 0.0 {
         return;
@@ -115,22 +117,25 @@ fn render_track_info(
         |ui| {
             ui.horizontal(|ui| {
                 ui.add(
-                    egui::Image::from_texture((icons.music.id(), egui::vec2(28.0, 28.0)))
-                        .fit_to_exact_size(egui::vec2(28.0, 28.0))
-                        .tint(theme.accent),
+                    egui::Image::from_texture((
+                        icons.music.id(),
+                        egui::vec2(responsive.icon_size, responsive.icon_size),
+                    ))
+                    .fit_to_exact_size(egui::vec2(responsive.icon_size, responsive.icon_size))
+                    .tint(theme.accent),
                 );
                 ui.vertical(|ui| {
                     if let Some(track) = current {
                         ui.label(
                             egui::RichText::new(&track.title)
-                                .size(14.0)
+                                .size(responsive.font_body_emphasis)
                                 .color(theme.text),
                         );
                         ui.small(egui::RichText::new(&track.channel).color(theme.secondary_text));
                     } else {
                         ui.label(
                             egui::RichText::new("Nothing playing")
-                                .size(14.0)
+                                .size(responsive.font_body_emphasis)
                                 .color(theme.text),
                         );
                         ui.small("Search for music to begin");
@@ -152,6 +157,7 @@ fn render_playback(
     duration: f64,
     guest: bool,
     theme: Theme,
+    responsive: &ResponsiveUi,
     actions: &mut Vec<FooterAction>,
 ) {
     ui.allocate_new_ui(
@@ -159,7 +165,7 @@ fn render_playback(
             .max_rect(playback_rect)
             .layout(egui::Layout::top_down(egui::Align::Center)),
         |ui| {
-            let rows = footer_playback_rows(playback_rect);
+            let rows = footer_playback_rows(playback_rect, responsive);
             let duration = current
                 .and_then(|track| track.duration)
                 .unwrap_or(duration)
@@ -179,10 +185,13 @@ fn render_playback(
                     .max_rect(rows.transport)
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
                 |ui| {
-                    let button_width = 28.0 + 36.0 + 28.0 + ui.spacing().item_spacing.x * 2.0;
+                    let side_button = responsive.button_min_size.x.clamp(28.0, 32.0);
+                    let play_button = responsive.control_height.clamp(32.0, 40.0);
+                    let button_width =
+                        side_button * 2.0 + play_button + ui.spacing().item_spacing.x * 2.0;
                     let button_rect = egui::Rect::from_center_size(
                         rows.transport.center(),
-                        egui::vec2(button_width, 30.0),
+                        egui::vec2(button_width, responsive.control_height.clamp(30.0, 40.0)),
                     );
                     ui.allocate_new_ui(
                         egui::UiBuilder::new()
@@ -194,8 +203,8 @@ fn render_playback(
                                     && icon_button(
                                         ui,
                                         &icons.previous,
-                                        20.0,
-                                        egui::vec2(28.0, 28.0),
+                                        responsive.icon_size,
+                                        egui::vec2(side_button, side_button),
                                         "Previous",
                                     )
                                     .clicked()
@@ -207,8 +216,16 @@ fn render_playback(
                                 if ui
                                     .add_enabled(
                                         !guest,
-                                        egui::Button::image(design_icon(play_icon, 22.0))
-                                            .min_size(egui::vec2(36.0, 30.0)),
+                                        egui::Button::image(design_icon(
+                                            play_icon,
+                                            responsive.icon_size + 2.0,
+                                        ))
+                                        .min_size(
+                                            egui::vec2(
+                                                play_button,
+                                                responsive.control_height.clamp(30.0, 40.0),
+                                            ),
+                                        ),
                                     )
                                     .clicked()
                                 {
@@ -219,8 +236,8 @@ fn render_playback(
                                     && icon_button(
                                         ui,
                                         &icons.next,
-                                        20.0,
-                                        egui::vec2(28.0, 28.0),
+                                        responsive.icon_size,
+                                        egui::vec2(side_button, side_button),
                                         "Next",
                                     )
                                     .clicked()
@@ -236,7 +253,7 @@ fn render_playback(
             let elapsed = format_position(position as f64);
             let total = format_duration(duration);
             let (elapsed_width, total_width) = ui.fonts(|fonts| {
-                let font = egui::FontId::proportional(12.0);
+                let font = egui::FontId::proportional(responsive.font_body);
                 let elapsed_width = fonts
                     .layout_no_wrap(elapsed.clone(), font.clone(), theme.secondary_text)
                     .size()
@@ -253,14 +270,18 @@ fn render_playback(
                 .min(rows.progress.width());
             let content_width = elapsed_width + gap + slider_width + gap + total_width;
             let content_left = rows.progress.center().x - content_width / 2.0;
-            let content_top = rows.progress.center().y - 10.0;
+            let content_height = responsive
+                .control_height
+                .mul_add(0.5, 0.0)
+                .clamp(18.0, 24.0);
+            let content_top = rows.progress.center().y - content_height / 2.0;
             let elapsed_rect = egui::Rect::from_min_size(
                 egui::pos2(content_left, content_top),
-                egui::vec2(elapsed_width, 20.0),
+                egui::vec2(elapsed_width, content_height),
             );
             let slider_rect = egui::Rect::from_min_size(
                 egui::pos2(elapsed_rect.right() + gap, content_top),
-                egui::vec2(slider_width, 20.0),
+                egui::vec2(slider_width, content_height),
             );
             let total_rect = egui::Rect::from_min_size(
                 egui::pos2(slider_rect.right() + gap, content_top),
@@ -274,7 +295,7 @@ fn render_playback(
                 |time_ui| {
                     time_ui.label(
                         egui::RichText::new(elapsed)
-                            .size(12.0)
+                            .size(responsive.font_body)
                             .color(theme.secondary_text),
                     );
                 },
@@ -293,10 +314,10 @@ fn render_playback(
                     visuals.slider_trailing_fill = true;
                     let style = slider_ui.style_mut();
                     style.spacing.slider_width = slider_width;
-                    style.spacing.slider_rail_height = 6.0;
+                    style.spacing.slider_rail_height = responsive.space_xs.clamp(4.0, 6.0);
 
                     slider_ui.add_sized(
-                        egui::vec2(slider_width, 20.0),
+                        egui::vec2(slider_width, content_height),
                         egui::Slider::new(&mut position, 0.0..=slider_end).show_value(false),
                     )
                 },
@@ -311,7 +332,7 @@ fn render_playback(
                 |time_ui| {
                     time_ui.label(
                         egui::RichText::new(total)
-                            .size(12.0)
+                            .size(responsive.font_body)
                             .color(theme.secondary_text),
                     );
                 },
@@ -330,6 +351,7 @@ fn render_volume(
     padding: f32,
     volume: u8,
     theme: Theme,
+    responsive: &ResponsiveUi,
     actions: &mut Vec<FooterAction>,
 ) {
     if rect.width() <= 0.0 {
@@ -342,9 +364,14 @@ fn render_volume(
             .layout(egui::Layout::right_to_left(egui::Align::Center)),
         |ui| {
             ui.add_space(padding);
-            ui.label(egui::RichText::new("Volume").size(12.0).color(theme.text));
+            ui.label(
+                egui::RichText::new("Volume")
+                    .size(responsive.font_body)
+                    .color(theme.text),
+            );
             ui.add_space(padding * 0.5);
-            let slider_width = (ui.available_width() - padding * 2.0).clamp(40.0, 140.0);
+            let slider_width = (ui.available_width() - padding * 2.0)
+                .clamp(responsive.rem(2.5), responsive.rem(8.75));
             let mut volume = volume;
             let visuals = ui.visuals_mut();
             visuals.widgets.inactive.bg_fill = theme.border;
@@ -354,11 +381,11 @@ fn render_volume(
             visuals.slider_trailing_fill = true;
             let style = ui.style_mut();
             style.spacing.slider_width = slider_width;
-            style.spacing.slider_rail_height = 6.0;
+            style.spacing.slider_rail_height = responsive.space_xs.clamp(4.0, 6.0);
 
             if ui
                 .add_sized(
-                    egui::vec2(slider_width, 22.0),
+                    egui::vec2(slider_width, responsive.control_height.clamp(22.0, 32.0)),
                     egui::Slider::new(&mut volume, 0..=100).show_value(true),
                 )
                 .changed()
