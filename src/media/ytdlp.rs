@@ -1,6 +1,6 @@
 use crate::{
-    models::{CookieBrowser, Track, YtEntry},
-    process::{hide_console, run_registered, ProcessRegistry},
+    domain::{CookieBrowser, Track, YtEntry},
+    infrastructure::process::{hide_console, run_registered, ProcessRegistry},
 };
 use std::{
     path::{Path, PathBuf},

@@ -1,12 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod domain;
+mod infrastructure;
 mod jam;
-mod models;
-mod player;
-mod process;
+mod media;
+mod playback;
+mod recommendations;
 mod theme;
-mod youtube;
+mod ui;
 
 fn main() -> eframe::Result<()> {
     app::run()

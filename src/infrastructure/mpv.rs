@@ -1,41 +1,25 @@
 use std::{
+    path::Path,
     process::{Child, Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
-    time::Instant,
 };
 
-use crate::{
-    models::Track,
-    process::{hide_console, ProcessRegistry},
-};
+use crate::infrastructure::process::{hide_console, ProcessRegistry};
 
 static NEXT_PIPE_ID: AtomicU64 = AtomicU64::new(1);
 
-pub(crate) struct Player {
+/// Low-level MPV process and IPC integration.
+///
+/// Playback state such as pause, position, and volume belongs to
+/// `playback::Player`; this backend owns only the child process and pipe.
+#[derive(Default)]
+pub(crate) struct MpvBackend {
     child: Option<Child>,
     ipc_path: Option<String>,
-    position_anchor: Option<Instant>,
-    position: f64,
-    pub(crate) paused: bool,
-    pub(crate) volume: u8,
     registry: ProcessRegistry,
 }
 
-impl Default for Player {
-    fn default() -> Self {
-        Self {
-            child: None,
-            ipc_path: None,
-            position_anchor: None,
-            position: 0.0,
-            paused: false,
-            volume: 100,
-            registry: ProcessRegistry::default(),
-        }
-    }
-}
-
-impl Player {
+impl MpvBackend {
     pub(crate) fn set_registry(&mut self, registry: ProcessRegistry) {
         self.registry = registry;
     }
@@ -62,54 +46,14 @@ impl Player {
             self.registry.remove(pid);
         }
         self.ipc_path = None;
-        self.position_anchor = None;
-        self.paused = false;
-        self.position = 0.0;
-    }
-
-    pub(crate) fn position_seconds(&self) -> f64 {
-        if self.paused {
-            self.position
-        } else {
-            self.position
-                + self
-                    .position_anchor
-                    .map(|anchor| anchor.elapsed().as_secs_f64())
-                    .unwrap_or(0.0)
-        }
-    }
-
-    pub(crate) fn set_paused(&mut self, paused: bool) {
-        self.position = self.position_seconds();
-        self.paused = paused;
-        self.position_anchor = if paused { None } else { Some(Instant::now()) };
-        self.send(if paused {
-            "[\"set_property\",\"pause\",true]"
-        } else {
-            "[\"set_property\",\"pause\",false]"
-        });
-    }
-
-    pub(crate) fn seek(&mut self, position: f64) {
-        self.position = position.max(0.0);
-        self.position_anchor = if self.paused {
-            None
-        } else {
-            Some(Instant::now())
-        };
-        self.send(&format!(
-            "[\"set_property\",\"time-pos\",{}]",
-            self.position
-        ));
     }
 
     pub(crate) fn play_stream(
         &mut self,
-        track: &Track,
         stream_url: &str,
-        mpv: &std::path::Path,
+        mpv: &Path,
+        volume: u8,
     ) -> Result<(), String> {
-        let _ = track;
         self.stop();
         let pipe_name = format!(
             "\\\\.\\pipe\\ytmusic-{}-{}",
@@ -125,7 +69,7 @@ impl Player {
                 "--audio-display=no",
                 "--idle=no",
                 &format!("--input-ipc-server={pipe_name}"),
-                &format!("--volume={}", self.volume),
+                &format!("--volume={volume}"),
                 stream_url,
             ])
             .stdin(Stdio::null())
@@ -138,8 +82,6 @@ impl Player {
         self.registry.assign_for_player(&child);
         self.child = Some(child);
         self.ipc_path = Some(pipe_name);
-        self.position = 0.0;
-        self.position_anchor = Some(Instant::now());
         Ok(())
     }
 

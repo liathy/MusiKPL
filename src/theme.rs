@@ -3,7 +3,6 @@ use eframe::egui;
 #[derive(Clone, Copy)]
 pub(crate) struct Theme {
     pub(crate) background: egui::Color32,
-    pub(crate) header: egui::Color32,
     pub(crate) surface: egui::Color32,
     pub(crate) raised: egui::Color32,
     pub(crate) hover: egui::Color32,
@@ -20,7 +19,6 @@ impl Default for Theme {
     fn default() -> Self {
         Self {
             background: egui::Color32::from_rgb(0, 0, 0),
-            header: egui::Color32::from_rgb(0, 0, 0),
             surface: egui::Color32::from_rgb(0, 0, 0),
             raised: egui::Color32::from_rgb(0, 0, 0),
             hover: egui::Color32::from_rgb(20, 20, 20),
