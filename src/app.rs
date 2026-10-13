@@ -2300,25 +2300,29 @@ mod tests {
     }
 
     #[test]
-    fn footer_geometry_centers_playback_and_keeps_zones_disjoint() {
-        for width in [600.0, 800.0, 1280.0, 1920.0] {
+    fn footer_geometry_centers_playback_against_the_full_footer() {
+        for width in [500.0, 700.0, 720.0, 800.0, 1200.0, 1600.0] {
             let footer =
                 egui::Rect::from_min_size(egui::pos2(37.0, 700.0), egui::vec2(width, 88.0));
             let geometry = footer_geometry(footer);
             let tolerance = 0.001;
             assert!((geometry.playback.center().x - footer.center().x).abs() < tolerance);
+            assert!((geometry.playback.width() - footer.width()).abs() < tolerance);
             assert!(footer.contains(geometry.left.min));
             assert!(footer.contains(geometry.playback.min));
             assert!(footer.contains(geometry.right.min));
-            assert!(geometry.left.right() <= geometry.playback.left() + tolerance);
-            assert!(geometry.playback.right() <= geometry.right.left() + tolerance);
             assert!((geometry.right.right() - footer.right()).abs() < tolerance);
         }
     }
 
     #[test]
     fn footer_playback_rows_fit_and_stay_centered() {
-        for size in [(800.0, 76.0), (1280.0, 88.0), (1920.0, 104.0)] {
+        for size in [
+            (500.0, 76.0),
+            (720.0, 76.0),
+            (1200.0, 88.0),
+            (1920.0, 104.0),
+        ] {
             let footer =
                 egui::Rect::from_min_size(egui::pos2(37.0, 500.0), egui::vec2(size.0, size.1));
             let rows = footer_playback_rows(footer);
@@ -2331,8 +2335,10 @@ mod tests {
             assert!(footer.contains(rows.progress.min));
             assert!(footer.contains(rows.progress.max));
             assert!(rows.transport.bottom() <= rows.progress.top() + tolerance);
+            assert!((rows.progress.top() - rows.transport.bottom() - 10.0).abs() < tolerance);
             assert!((rows.transport.center().x - rows.progress.center().x).abs() < tolerance);
-            assert!((rows.transport.width() - rows.progress.width()).abs() < tolerance);
+            assert!(rows.transport.width() <= rows.progress.width() + tolerance);
+            assert!((rows.progress.width() - footer_columns(size.0).center).abs() < tolerance);
         }
     }
 
