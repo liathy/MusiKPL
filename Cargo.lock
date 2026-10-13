@@ -3,6 +3,19 @@
 version = 4
 
 [[package]]
+name = "MusiKPL"
+version = "0.2.1"
+dependencies = [
+ "eframe",
+ "egui",
+ "egui_extras",
+ "raw-window-handle",
+ "serde",
+ "serde_json",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
 name = "ab_glyph"
 version = "0.2.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3496,18 +3509,6 @@ dependencies = [
  "quote",
  "syn 3.0.9",
  "synstructure",
-]
-
-[[package]]
-name = "ytmusic"
-version = "0.1.0"
-dependencies = [
- "eframe",
- "egui",
- "egui_extras",
- "serde",
- "serde_json",
- "windows-sys 0.52.0",
 ]
 
 [[package]]
