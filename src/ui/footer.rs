@@ -346,6 +346,16 @@ fn render_volume(
             ui.add_space(padding * 0.5);
             let slider_width = (ui.available_width() - padding * 2.0).clamp(40.0, 140.0);
             let mut volume = volume;
+            let visuals = ui.visuals_mut();
+            visuals.widgets.inactive.bg_fill = theme.border;
+            visuals.widgets.inactive.weak_bg_fill = theme.border;
+            visuals.widgets.hovered.bg_fill = theme.secondary_text;
+            visuals.widgets.active.bg_fill = theme.accent;
+            visuals.slider_trailing_fill = true;
+            let style = ui.style_mut();
+            style.spacing.slider_width = slider_width;
+            style.spacing.slider_rail_height = 6.0;
+
             if ui
                 .add_sized(
                     egui::vec2(slider_width, 22.0),
