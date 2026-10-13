@@ -73,7 +73,7 @@ try {
             cargo build --release
             $releaseDir = Join-Path $ProjectRoot 'dist'
             New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
-            Copy-Item (Join-Path $ProjectRoot 'target\release\ytmusic.exe') $releaseDir -Force
+            Copy-Item (Join-Path $ProjectRoot 'target\release\MusiKPL.exe') $releaseDir -Force
             Copy-Item (Join-Path $ProjectRoot 'mpv.exe') $releaseDir -Force
             Copy-Item (Join-Path $ProjectRoot 'yt-dlp.exe') $releaseDir -Force
             Write-Host "Portable build created at $releaseDir" -ForegroundColor Green
