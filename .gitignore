@@ -2,3 +2,5 @@
 /dist/
 /mpv.exe
 /yt-dlp.exe
+*.md
+!README.md
