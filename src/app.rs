@@ -165,10 +165,15 @@ impl YtMusicApp {
                                             .and_then(|track| track.duration)
                                             .unwrap_or(0.0);
 
-                                        let mut position = self
-                                            .player
-                                            .position_seconds()
-                                            .min(duration.max(0.0)) as f32;
+                                        let mut position = if duration > 0.0 {
+                                            self.player.position_seconds().min(duration) as f32
+                                        } else {
+                                            0.0
+                                        };
+                                        // A zero-length slider range is rendered by egui with
+                                        // its handle at the midpoint. Use a harmless disabled
+                                        // visual range while no track is loaded so it stays at 00:00.
+                                        let slider_end = duration.max(1.0) as f32;
                                         let guest = self.jam.info.role == Some(Role::Guest);
 
                                         // Row 1: playback buttons, centered in their own rectangle.
@@ -241,10 +246,9 @@ impl YtMusicApp {
                                         let elapsed = format_position(position as f64);
                                         let total = format_duration(duration);
 
-                                        // Reserve equal space for both time labels. This keeps the
-                                        // seek bar's midpoint exactly aligned with the playback buttons,
-                                        // even when elapsed and total have different text widths.
-                                        let time_label_width = ui.fonts(|fonts| {
+                                        // Measure each label independently so the complete visible
+                                        // row can be centered using its actual content bounds.
+                                        let (elapsed_width, total_width) = ui.fonts(|fonts| {
                                             let font = egui::FontId::proportional(12.0);
                                             let elapsed_width = fonts
                                                 .layout_no_wrap(elapsed.clone(), font.clone(), theme.secondary_text)
@@ -252,68 +256,98 @@ impl YtMusicApp {
                                             let total_width = fonts
                                                 .layout_no_wrap(total.clone(), font, theme.secondary_text)
                                                 .size().x;
-                                            elapsed_width.max(total_width) + 4.0
+                                            (elapsed_width, total_width)
                                         });
                                         let gap = ui.spacing().item_spacing.x;
                                         let slider_width = (rows.progress.width()
-                                            - time_label_width * 2.0
+                                            - elapsed_width
+                                            - total_width
                                             - gap * 2.0)
-                                            .max(0.0);
+                                            .max(40.0)
+                                            .min(rows.progress.width());
+
+                                        let content_width = elapsed_width
+                                            + gap
+                                            + slider_width
+                                            + gap
+                                            + total_width;
+                                        let content_left =
+                                            rows.progress.center().x - content_width / 2.0;
+                                        let content_top = rows.progress.center().y - 10.0;
+                                        let elapsed_rect = egui::Rect::from_min_size(
+                                            egui::pos2(content_left, content_top),
+                                            egui::vec2(elapsed_width, 20.0),
+                                        );
+                                        let slider_rect = egui::Rect::from_min_size(
+                                            egui::pos2(elapsed_rect.right() + gap, content_top),
+                                            egui::vec2(slider_width, 20.0),
+                                        );
+                                        let total_rect = egui::Rect::from_min_size(
+                                            egui::pos2(slider_rect.right() + gap, content_top),
+                                            egui::vec2(total_width, 20.0),
+                                        );
 
                                         ui.allocate_new_ui(
                                             egui::UiBuilder::new()
-                                                .max_rect(rows.progress)
-                                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                                            |ui| {
-                                                ui.with_layout(
-                                                    egui::Layout::left_to_right(egui::Align::Center)
-                                                        .with_main_align(egui::Align::Center),
-                                                    |ui| {
-                                                    ui.allocate_ui_with_layout(
-                                                        egui::vec2(time_label_width, 20.0),
-                                                        egui::Layout::right_to_left(egui::Align::Center),
-                                                        |time_ui| {
-                                                            time_ui.label(egui::RichText::new(elapsed)
-                                                                .size(12.0)
-                                                                .color(theme.secondary_text));
-                                                        },
-                                                    );
-
-                                                    let mut changed = false;
-                                                    ui.allocate_ui_with_layout(
-                                                        egui::vec2(slider_width, 20.0),
-                                                        egui::Layout::left_to_right(egui::Align::Center),
-                                                        |slider_ui| {
-                                                            changed = slider_ui
-                                                                .add_enabled(
-                                                                    duration > 0.0 && !guest,
-                                                                    egui::Slider::new(
-                                                                        &mut position,
-                                                                        0.0..=(duration.max(0.0) as f32),
-                                                                    )
-                                                                    .show_value(false),
-                                                                )
-                                                                .changed();
-                                                        },
-                                                    );
-
-                                                    if changed && !guest {
-                                                        self.player.seek(position as f64);
-                                                    }
-
-                                                    ui.allocate_ui_with_layout(
-                                                        egui::vec2(time_label_width, 20.0),
-                                                        egui::Layout::left_to_right(egui::Align::Center),
-                                                        |time_ui| {
-                                                            time_ui.label(egui::RichText::new(total)
-                                                                .size(12.0)
-                                                                .color(theme.secondary_text));
-                                                        },
-                                                    );
-                                                    },
+                                                .max_rect(elapsed_rect)
+                                                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                                            |time_ui| {
+                                                time_ui.label(
+                                                    egui::RichText::new(elapsed)
+                                                        .size(12.0)
+                                                        .color(theme.secondary_text),
                                                 );
                                             },
                                         );
+
+                                        let slider_response = ui.allocate_new_ui(
+                                            egui::UiBuilder::new()
+                                                .max_rect(slider_rect)
+                                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                                            |slider_ui| {
+                                                let visuals = slider_ui.visuals_mut();
+                                                visuals.widgets.inactive.bg_fill = theme.border;
+                                                visuals.widgets.inactive.weak_bg_fill = theme.border;
+                                                visuals.widgets.hovered.bg_fill = theme.secondary_text;
+                                                visuals.widgets.active.bg_fill = theme.accent;
+                                                visuals.slider_trailing_fill = true;
+                                                let style = slider_ui.style_mut();
+                                                style.spacing.slider_width = slider_width;
+                                                style.spacing.slider_rail_height = 6.0;
+
+                                                slider_ui.add_sized(
+                                                    egui::vec2(slider_width, 20.0),
+                                                            egui::Slider::new(
+                                                                &mut position,
+                                                                0.0..=slider_end,
+                                                            )
+                                                    .show_value(false),
+                                                )
+                                            },
+                                        );
+
+                                        debug_assert!(
+                                            (slider_response.inner.rect.width() - slider_width)
+                                                .abs()
+                                                < 0.5
+                                        );
+
+                                        ui.allocate_new_ui(
+                                            egui::UiBuilder::new()
+                                                .max_rect(total_rect)
+                                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                                            |time_ui| {
+                                                time_ui.label(
+                                                    egui::RichText::new(total)
+                                                        .size(12.0)
+                                                        .color(theme.secondary_text),
+                                                );
+                                            },
+                                        );
+
+                                        if slider_response.inner.changed() && !guest {
+                                            self.player.seek(position as f64);
+                                        }
                                     },
                                 );
 
@@ -793,14 +827,19 @@ struct FooterPlaybackRows {
 fn footer_playback_rows(playback_rect: egui::Rect) -> FooterPlaybackRows {
     const TRANSPORT_HEIGHT: f32 = 30.0;
     const PROGRESS_HEIGHT: f32 = 20.0;
-    const ROW_GAP: f32 = 0.0;
+    const ROW_GAP: f32 = 10.0;
+
+    // The playback rectangle is a full-width positioning reference. The
+    // widgets themselves remain in compact rectangles so they cannot cover
+    // the track details or volume controls.
+    let transport_width = 120.0_f32.min(playback_rect.width());
+    // Use the actual middle column width so the progress row fills the space
+    // between the side sections without changing its centered position.
+    let footer_width = playback_rect.width().max(0.0);
+    let progress_width = footer_columns(footer_width).center.min(footer_width);
 
     // Treat the buttons and seek bar as one centered vertical control group.
-    // Both rows use the same width so the progress bar sits directly beneath
-    // the playback controls instead of forming a separate visual column.
-    let group_width = (playback_rect.width() - 32.0)
-        .clamp(180.0, 520.0)
-        .min(playback_rect.width());
+    // Both rows use the footer midpoint as their horizontal midpoint.
     let content_height = TRANSPORT_HEIGHT + ROW_GAP + PROGRESS_HEIGHT;
     let content_top = playback_rect.center().y - content_height / 2.0;
     let content_top = content_top.max(playback_rect.top());
@@ -808,35 +847,37 @@ fn footer_playback_rows(playback_rect: egui::Rect) -> FooterPlaybackRows {
     let progress_top = transport_top + TRANSPORT_HEIGHT + ROW_GAP;
     let progress_top = progress_top.min(playback_rect.bottom() - PROGRESS_HEIGHT);
 
+    let transport_bottom = transport_top + TRANSPORT_HEIGHT;
+    debug_assert!((progress_top - transport_bottom - ROW_GAP).abs() < 0.1);
+
     FooterPlaybackRows {
         transport: egui::Rect::from_center_size(
             egui::pos2(
                 playback_rect.center().x,
                 transport_top + TRANSPORT_HEIGHT / 2.0,
             ),
-            egui::vec2(group_width, TRANSPORT_HEIGHT),
+            egui::vec2(transport_width, TRANSPORT_HEIGHT),
         ),
         progress: egui::Rect::from_center_size(
             egui::pos2(
                 playback_rect.center().x,
                 progress_top + PROGRESS_HEIGHT / 2.0,
             ),
-            egui::vec2(group_width, PROGRESS_HEIGHT),
+            egui::vec2(progress_width, PROGRESS_HEIGHT),
         ),
     }
 }
 
 fn footer_geometry(footer_rect: egui::Rect) -> FooterGeometry {
     let columns = footer_columns(footer_rect.width());
-    let center_x = (footer_rect.left() + footer_rect.right()) / 2.0;
     FooterGeometry {
         left: egui::Rect::from_min_size(
             footer_rect.min,
             egui::vec2(columns.left, footer_rect.height()),
         ),
         playback: egui::Rect::from_center_size(
-            egui::pos2(center_x, footer_rect.center().y),
-            egui::vec2(columns.center, footer_rect.height()),
+            footer_rect.center(),
+            egui::vec2(footer_rect.width(), footer_rect.height()),
         ),
         right: egui::Rect::from_min_size(
             egui::pos2(footer_rect.right() - columns.right, footer_rect.top()),
