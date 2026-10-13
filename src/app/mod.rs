@@ -630,11 +630,53 @@ pub fn run() -> eframe::Result<()> {
         "MusiKPL",
         options,
         Box::new(|cc| {
+            apply_windows_title_bar_colors(cc);
             egui_extras::install_image_loaders(&cc.egui_ctx);
             Ok(Box::new(YtMusicApp::default()))
         }),
     )
 }
+
+#[cfg(windows)]
+fn apply_windows_title_bar_colors(cc: &eframe::CreationContext<'_>) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use std::{ffi::c_void, mem::size_of};
+    use windows_sys::Win32::{
+        Foundation::HWND,
+        Graphics::Dwm::{
+            DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR,
+        },
+    };
+
+    let Ok(window_handle) = cc.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::Win32(window) = window_handle.as_raw() else {
+        return;
+    };
+
+    let hwnd = window.hwnd.get() as HWND;
+    let black: u32 = 0x000000;
+    let white: u32 = 0xFFFFFF;
+
+    unsafe {
+        for (attribute, color) in [
+            (DWMWA_CAPTION_COLOR, black),
+            (DWMWA_TEXT_COLOR, white),
+            (DWMWA_BORDER_COLOR, black),
+        ] {
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                attribute as u32,
+                &color as *const u32 as *const c_void,
+                size_of::<u32>() as u32,
+            );
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn apply_windows_title_bar_colors(_: &eframe::CreationContext<'_>) {}
 
 #[cfg(test)]
 mod tests {
