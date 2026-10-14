@@ -40,6 +40,35 @@ pub(crate) fn responsive_layout(size: egui::Vec2, responsive: &ResponsiveUi) -> 
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct QueueRowColumns {
+    pub(crate) index: f32,
+    pub(crate) title: f32,
+    pub(crate) remove: f32,
+}
+
+/// Split one queue row into index, title, and remove-button columns.
+///
+/// The index and remove widths are reserved in full first; the title gets
+/// whatever is left after the two gaps, and collapses to zero rather than
+/// taking space from the button.
+pub(crate) fn queue_row_columns(
+    row_width: f32,
+    index_width: f32,
+    remove_width: f32,
+    gap: f32,
+) -> QueueRowColumns {
+    let index = index_width.max(0.0);
+    let remove = remove_width.max(0.0);
+    let title = (row_width - index - remove - gap.max(0.0) * 2.0).max(0.0);
+
+    QueueRowColumns {
+        index,
+        title,
+        remove,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct FooterColumns {
     pub(crate) left: f32,
     pub(crate) center: f32,
@@ -261,6 +290,37 @@ mod tests {
             assert!(layout.body_height > 0.0);
             assert!(layout.main_width > 0.0);
             assert!(layout.header_height + layout.footer_height <= height);
+        }
+    }
+
+    #[test]
+    fn queue_row_columns_fill_the_row_without_exceeding_it() {
+        let (index, remove, gap) = (22.0, 64.0, 8.0);
+        for row_width in [200.0, 329.6, 600.0] {
+            let columns = queue_row_columns(row_width, index, remove, gap);
+            let used = columns.index + columns.title + columns.remove + gap * 2.0;
+
+            assert_eq!(columns.index, index);
+            assert_eq!(columns.remove, remove);
+            assert!(columns.title > 0.0);
+            assert!((used - row_width).abs() < 0.001);
+        }
+    }
+
+    #[test]
+    fn queue_row_columns_keep_the_full_button_when_the_title_has_no_room() {
+        let (index, remove, gap) = (22.0, 64.0, 8.0);
+        let fixed = index + remove + gap * 2.0;
+
+        let minimal = queue_row_columns(fixed + 1.0, index, remove, gap);
+        assert!((minimal.title - 1.0).abs() < 0.001);
+        assert_eq!(minimal.remove, remove);
+
+        for row_width in [fixed, fixed - 30.0, 0.0, -5.0] {
+            let columns = queue_row_columns(row_width, index, remove, gap);
+            assert_eq!(columns.title, 0.0);
+            assert_eq!(columns.index, index);
+            assert_eq!(columns.remove, remove);
         }
     }
 

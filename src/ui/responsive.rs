@@ -102,11 +102,11 @@ impl ResponsiveUi {
             mode,
             base_unit,
 
-            font_caption: rem(0.75).max(9.0),
-            font_body: rem(0.875).max(10.0),
-            font_body_emphasis: rem(0.9375).max(10.0),
-            font_heading: rem(1.25).max(12.0),
-            font_title: rem(1.125).clamp(16.0, 20.0),
+            font_caption: rem(1.0).max(11.0),
+            font_body: rem(1.25).max(13.0),
+            font_body_emphasis: rem(1.15).max(14.0),
+            font_heading: rem(1.75).max(18.0),
+            font_title: rem(2.0).clamp(22.0, 28.0),
 
             space_xs: rem(0.25),
             space_sm: rem(0.5),
@@ -120,7 +120,7 @@ impl ResponsiveUi {
 
             sidebar_width,
             queue_width,
-            header_height: rem(4.625).clamp(56.0, 76.0),
+            header_height: rem(3.625),
             player_footer_height: rem(4.9375).clamp(76.0, 104.0),
             artwork_size,
         }

@@ -422,7 +422,6 @@ impl YtMusicApp {
         let viewport = ctx.available_rect().size();
         let responsive = ResponsiveUi::from_size(viewport);
         let layout = responsive_layout(viewport, &responsive);
-        let raised = theme.raised;
         let muted = theme.secondary_text;
         let accent = theme.accent;
         let header_height = layout.header_height;
@@ -431,7 +430,7 @@ impl YtMusicApp {
         let sidebar_width = layout.sidebar_width;
         let queue_width = layout.queue_width;
 
-        if show_header(ctx, header_height, &mut self.search, raised, &responsive) {
+        if show_header(ctx, header_height, &mut self.search, &responsive) {
             self.search();
         }
         self.render_full_width_footer(ctx, &icons, &responsive);
