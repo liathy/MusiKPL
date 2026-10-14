@@ -295,7 +295,10 @@ impl YtMusicApp {
                     } else {
                         self.current = Some(track.clone());
                     }
-                    match self.player.play_stream(&track, &url, &self.tools.mpv) {
+                    match self
+                        .player
+                        .play_stream_at(&track, &url, &self.tools.mpv, 0.0, false)
+                    {
                         Ok(()) => {
                             self.status = "Playing".into();
                             self.error = None;
@@ -615,6 +618,7 @@ impl eframe::App for YtMusicApp {
             style.spacing.button_padding = egui::vec2(theme.spacing + 1.0, theme.spacing * 0.75);
         });
 
+        self.player.refresh_position();
         self.poll_background_work();
         self.poll_jam();
         self.reconcile_guest_playback();
