@@ -145,6 +145,67 @@ pub(crate) fn footer_playback_rows(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct FooterTrackInfo {
+    pub(crate) icon: egui::Rect,
+    pub(crate) text: egui::Rect,
+}
+
+/// Place the track icon and its two-line text block inside `content`.
+///
+/// Both are centered on the vertical middle of `content`. The text takes the
+/// width left after the icon and one `gap`, and never extends past
+/// `content`'s right edge, so long titles must truncate.
+pub(crate) fn footer_track_info(
+    content: egui::Rect,
+    icon_size: f32,
+    gap: f32,
+    text_height: f32,
+) -> FooterTrackInfo {
+    let center_y = content.center().y;
+    let icon = egui::Rect::from_center_size(
+        egui::pos2(content.left() + icon_size / 2.0, center_y),
+        egui::Vec2::splat(icon_size),
+    );
+    let text_left = (icon.right() + gap).min(content.right());
+    let text = egui::Rect::from_min_max(
+        egui::pos2(text_left, center_y - text_height / 2.0),
+        egui::pos2(content.right().max(text_left), center_y + text_height / 2.0),
+    );
+
+    FooterTrackInfo { icon, text }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct FooterTransportButtons {
+    pub(crate) previous: egui::Rect,
+    pub(crate) play: egui::Rect,
+    pub(crate) next: egui::Rect,
+}
+
+/// Place previous, play, and next around `center`.
+///
+/// The play button is centered exactly on `center`; the side buttons sit one
+/// `gap` away on either side and share its vertical center, whatever their
+/// individual sizes are.
+pub(crate) fn footer_transport_buttons(
+    center: egui::Pos2,
+    side_size: egui::Vec2,
+    play_size: egui::Vec2,
+    gap: f32,
+) -> FooterTransportButtons {
+    let side_offset = play_size.x / 2.0 + gap + side_size.x / 2.0;
+
+    FooterTransportButtons {
+        previous: egui::Rect::from_center_size(
+            egui::pos2(center.x - side_offset, center.y),
+            side_size,
+        ),
+        play: egui::Rect::from_center_size(center, play_size),
+        next: egui::Rect::from_center_size(egui::pos2(center.x + side_offset, center.y), side_size),
+    }
+}
+
 pub(crate) fn footer_geometry(
     footer_rect: egui::Rect,
     responsive: &ResponsiveUi,
@@ -237,6 +298,50 @@ mod tests {
             assert!(footer.contains(geometry.playback.min));
             assert!(footer.contains(geometry.right.min));
             assert!((geometry.right.right() - footer.right()).abs() < tolerance);
+        }
+    }
+
+    #[test]
+    fn footer_transport_buttons_share_a_center_line_and_do_not_overlap() {
+        let center = egui::pos2(640.0, 678.0);
+        for (side, play, gap) in [(32.0, 32.0, 8.0), (36.0, 38.0, 8.0), (42.0, 44.0, 8.0)] {
+            let buttons = footer_transport_buttons(
+                center,
+                egui::vec2(side, side - 4.0),
+                egui::vec2(play, play),
+                gap,
+            );
+            let tolerance = 0.001;
+
+            assert!((buttons.play.center() - center).length() < tolerance);
+            assert!((buttons.previous.center().y - center.y).abs() < tolerance);
+            assert!((buttons.next.center().y - center.y).abs() < tolerance);
+            assert!((buttons.play.left() - buttons.previous.right() - gap).abs() < tolerance);
+            assert!((buttons.next.left() - buttons.play.right() - gap).abs() < tolerance);
+            assert!(
+                (center.x - buttons.previous.left() - (buttons.next.right() - center.x)).abs()
+                    < tolerance
+            );
+        }
+    }
+
+    #[test]
+    fn footer_track_info_is_vertically_centered_and_stays_in_its_column() {
+        for width in [0.0, 20.0, 180.0, 480.0] {
+            let content =
+                egui::Rect::from_min_size(egui::pos2(12.0, 644.0), egui::vec2(width, 76.0));
+            let info = footer_track_info(content, 18.0, 8.0, 33.0);
+            let tolerance = 0.001;
+
+            assert!((info.icon.center().y - content.center().y).abs() < tolerance);
+            assert!((info.text.center().y - content.center().y).abs() < tolerance);
+            assert!((info.text.height() - 33.0).abs() < tolerance);
+            assert!(info.text.width() >= 0.0);
+            assert!(info.text.right() <= content.right().max(info.text.left()) + tolerance);
+            if width >= 180.0 {
+                assert!((info.text.left() - info.icon.right() - 8.0).abs() < tolerance);
+                assert!((info.text.right() - content.right()).abs() < tolerance);
+            }
         }
     }
 

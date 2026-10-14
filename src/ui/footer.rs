@@ -109,43 +109,59 @@ fn render_track_info(
         return;
     }
 
-    let content_rect = rect.shrink2(egui::vec2(padding, 0.0));
+    let (title, subtitle) = match current {
+        Some(track) => (track.title.as_str(), track.channel.as_str()),
+        None => ("Nothing playing", "Search for music to begin"),
+    };
+    let title_font = egui::FontId::proportional(responsive.font_body_emphasis);
+    let subtitle_font = egui::TextStyle::Small.resolve(ui.style());
+    let line_gap = responsive.space_xs;
+    let text_height = ui
+        .fonts(|fonts| fonts.row_height(&title_font) + line_gap + fonts.row_height(&subtitle_font));
+    // Both rectangles are derived from the footer's own center line, and the
+    // text is confined to what is left of the column so it truncates instead
+    // of running under the playback controls.
+    let info = footer_track_info(
+        rect.shrink2(egui::vec2(padding, 0.0)),
+        responsive.icon_size,
+        ui.spacing().item_spacing.x,
+        text_height,
+    );
+
+    ui.put(
+        info.icon,
+        egui::Image::from_texture((icons.music.id(), info.icon.size()))
+            .fit_to_exact_size(info.icon.size())
+            .tint(theme.accent),
+    );
+    if info.text.width() <= 0.0 {
+        return;
+    }
     ui.allocate_new_ui(
         egui::UiBuilder::new()
-            .max_rect(content_rect)
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            .max_rect(info.text)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
         |ui| {
-            ui.horizontal(|ui| {
-                ui.add(
-                    egui::Image::from_texture((
-                        icons.music.id(),
-                        egui::vec2(responsive.icon_size, responsive.icon_size),
-                    ))
-                    .fit_to_exact_size(egui::vec2(responsive.icon_size, responsive.icon_size))
-                    .tint(theme.accent),
-                );
-                ui.vertical(|ui| {
-                    if let Some(track) = current {
-                        ui.label(
-                            egui::RichText::new(&track.title)
-                                .size(responsive.font_body_emphasis)
-                                .color(theme.text),
-                        );
-                        ui.small(egui::RichText::new(&track.channel).color(theme.secondary_text));
-                    } else {
-                        ui.label(
-                            egui::RichText::new("Nothing playing")
-                                .size(responsive.font_body_emphasis)
-                                .color(theme.text),
-                        );
-                        ui.small("Search for music to begin");
-                    }
-                });
-            });
+            ui.spacing_mut().item_spacing.y = line_gap;
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(title)
+                        .font(title_font)
+                        .color(theme.text),
+                )
+                .truncate(),
+            );
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(subtitle)
+                        .font(subtitle_font)
+                        .color(theme.secondary_text),
+                )
+                .truncate(),
+            );
         },
     );
 }
-
 #[allow(clippy::too_many_arguments)]
 fn render_playback(
     ui: &mut egui::Ui,
@@ -180,76 +196,62 @@ fn render_playback(
             // is loaded so it stays at 00:00.
             let slider_end = duration.max(1.0) as f32;
 
-            ui.allocate_new_ui(
-                egui::UiBuilder::new()
-                    .max_rect(rows.transport)
-                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                |ui| {
-                    let side_button = responsive.button_min_size.x.clamp(28.0, 32.0);
-                    let play_button = responsive.control_height.clamp(32.0, 40.0);
-                    let button_width =
-                        side_button * 2.0 + play_button + ui.spacing().item_spacing.x * 2.0;
-                    let button_rect = egui::Rect::from_center_size(
-                        rows.transport.center(),
-                        egui::vec2(button_width, responsive.control_height.clamp(30.0, 40.0)),
-                    );
-                    ui.allocate_new_ui(
-                        egui::UiBuilder::new()
-                            .max_rect(button_rect)
-                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                        |ui| {
-                            ui.horizontal(|ui| {
-                                if !guest
-                                    && icon_button(
-                                        ui,
-                                        &icons.previous,
-                                        responsive.icon_size,
-                                        egui::vec2(side_button, side_button),
-                                        "Previous",
-                                    )
-                                    .clicked()
-                                {
-                                    actions.push(FooterAction::Previous);
-                                }
-
-                                let play_icon = if paused { &icons.play } else { &icons.pause };
-                                if ui
-                                    .add_enabled(
-                                        !guest,
-                                        egui::Button::image(design_icon(
-                                            play_icon,
-                                            responsive.icon_size + 2.0,
-                                        ))
-                                        .min_size(
-                                            egui::vec2(
-                                                play_button,
-                                                responsive.control_height.clamp(30.0, 40.0),
-                                            ),
-                                        ),
-                                    )
-                                    .clicked()
-                                {
-                                    actions.push(FooterAction::TogglePause);
-                                }
-
-                                if !guest
-                                    && icon_button(
-                                        ui,
-                                        &icons.next,
-                                        responsive.icon_size,
-                                        egui::vec2(side_button, side_button),
-                                        "Next",
-                                    )
-                                    .clicked()
-                                {
-                                    actions.push(FooterAction::Next);
-                                }
-                            });
-                        },
-                    );
-                },
+            // Each button gets an explicit rectangle on the row's center line.
+            // A single-pass horizontal row cannot re-center earlier buttons once
+            // the taller play button grows it, which left them at different heights.
+            let button_padding = ui.spacing().button_padding;
+            let side_icon = responsive.icon_size;
+            let play_icon_size = responsive.icon_size + 2.0;
+            let side_size = egui::Vec2::splat(responsive.button_min_size.x.clamp(28.0, 32.0))
+                .max(egui::Vec2::splat(side_icon) + button_padding * 2.0);
+            let play_size = egui::vec2(
+                responsive.control_height.clamp(32.0, 40.0),
+                responsive.control_height.clamp(30.0, 40.0),
+            )
+            .max(egui::Vec2::splat(play_icon_size) + button_padding * 2.0);
+            let buttons = footer_transport_buttons(
+                rows.transport.center(),
+                side_size,
+                play_size,
+                ui.spacing().item_spacing.x,
             );
 
+            if !guest
+                && ui
+                    .put(
+                        buttons.previous,
+                        egui::Button::image(design_icon(&icons.previous, side_icon)),
+                    )
+                    .on_hover_text("Previous")
+                    .clicked()
+            {
+                actions.push(FooterAction::Previous);
+            }
+
+            let play_icon = if paused { &icons.play } else { &icons.pause };
+            if ui
+                .put(buttons.play, |ui: &mut egui::Ui| {
+                    ui.add_enabled(
+                        !guest,
+                        egui::Button::image(design_icon(play_icon, play_icon_size)),
+                    )
+                })
+                .clicked()
+            {
+                actions.push(FooterAction::TogglePause);
+            }
+
+            if !guest
+                && ui
+                    .put(
+                        buttons.next,
+                        egui::Button::image(design_icon(&icons.next, side_icon)),
+                    )
+                    .on_hover_text("Next")
+                    .clicked()
+            {
+                actions.push(FooterAction::Next);
+            }
             let elapsed = format_position(position as f64);
             let total = format_duration(duration);
             let (elapsed_width, total_width) = ui.fonts(|fonts| {
