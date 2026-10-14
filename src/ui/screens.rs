@@ -87,6 +87,7 @@ pub(crate) fn show_home(
     icons: &IconTextures,
     current: Option<&Track>,
     results: &[Track],
+    guest: bool,
     responsive: &ResponsiveUi,
 ) -> Vec<HomeAction> {
     let theme = Theme::default();
@@ -187,17 +188,20 @@ pub(crate) fn show_home(
                         .inner_margin(responsive.space_sm)
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                if icon_button(
-                                    ui,
-                                    &icons.play,
-                                    responsive.icon_size,
-                                    egui::vec2(
-                                        responsive.rem(3.0).clamp(42.0, 54.0),
-                                        responsive.control_height,
-                                    ),
-                                    "Play",
-                                )
-                                .clicked()
+                                // A Jam guest cannot start playback; the
+                                // button on the right sends a request instead.
+                                if !guest
+                                    && icon_button(
+                                        ui,
+                                        &icons.play,
+                                        responsive.icon_size,
+                                        egui::vec2(
+                                            responsive.rem(3.0).clamp(42.0, 54.0),
+                                            responsive.control_height,
+                                        ),
+                                        "Play",
+                                    )
+                                    .clicked()
                                 {
                                     actions.push(HomeAction::PlaySearch(track.clone()));
                                 }
@@ -226,7 +230,12 @@ pub(crate) fn show_home(
                                                     responsive.rem(4.5).clamp(64.0, 80.0),
                                                     responsive.control_height,
                                                 ],
-                                                egui::Button::new("Add to mix").fill(theme.accent),
+                                                egui::Button::new(if guest {
+                                                    "Request"
+                                                } else {
+                                                    "Add to mix"
+                                                })
+                                                .fill(theme.accent),
                                             )
                                             .clicked()
                                         {

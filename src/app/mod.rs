@@ -1,25 +1,28 @@
 mod actions;
 mod errors;
+mod jam_sync;
 
 use crate::{
     domain::{youtube_mix_url, CookieBrowser, Track},
     infrastructure::process::ProcessRegistry,
-    jam::{self, JamController, JamEvent, PlaybackSnapshot, Role},
+    jam::{JamController, Role},
     media::{query_ytdlp, resolve_audio_url, Tools},
     playback::{Player, Queue},
     recommendations::{select_mix_items, History},
     theme::Theme,
     ui::footer::{show as render_footer, FooterState},
     ui::screens::{show_header, show_home, show_queue_panel, HomeAction, QueueAction},
-    ui::{icons::IconTextures, layout::responsive_layout, responsive::ResponsiveUi},
+    ui::{
+        apply_text_sizes, icons::IconTextures, layout::responsive_layout, responsive::ResponsiveUi,
+    },
 };
 use eframe::egui;
 use std::{
     sync::mpsc::{self, Receiver},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use self::errors::AppError;
+use self::{errors::AppError, jam_sync::GuestSync};
 
 type PlayResult = Result<(Track, String, bool, bool), String>;
 
@@ -47,8 +50,13 @@ struct YtMusicApp {
     jam: JamController,
     jam_join_address: String,
     jam_join_token: String,
-    jam_port: String,
-    jam_pending: Option<PlaybackSnapshot>,
+    jam_show_code_join: bool,
+    jam_sync: GuestSync,
+    jam_notice: Option<(String, Instant)>,
+    /// The track currently being resolved, so a Jam host can announce it early.
+    pending_track: Option<Track>,
+    /// Host: when a new track started waiting, paused, for guests to load it.
+    jam_hold: Option<Instant>,
 }
 
 impl Default for YtMusicApp {
@@ -78,10 +86,13 @@ impl Default for YtMusicApp {
             mix_rx: None,
             play_rx: None,
             jam: JamController::default(),
-            jam_join_address: "192.168.1.1:38721".into(),
+            jam_join_address: String::new(),
             jam_join_token: String::new(),
-            jam_port: "38721".into(),
-            jam_pending: None,
+            jam_show_code_join: false,
+            jam_sync: GuestSync::default(),
+            jam_notice: None,
+            pending_track: None,
+            jam_hold: None,
         }
     }
 }
@@ -174,6 +185,8 @@ impl YtMusicApp {
     fn start_track(&mut self, track: Track, remember_current: bool, refresh_mix: bool) {
         self.player.stop();
         self.loading = true;
+        self.pending_track = Some(track.clone());
+        self.jam_hold = None;
         self.error = None;
         self.status = "Loading audio...".into();
         self.finished_handled = false;
@@ -286,6 +299,15 @@ impl YtMusicApp {
         if let Some(result) = play_result {
             self.play_rx = None;
             self.loading = false;
+            self.pending_track = None;
+            if self.is_guest() {
+                // A guest only ever loads the host's track, on the host's clock.
+                match result {
+                    Ok((track, url, _, _)) => self.finish_guest_load(track, &url),
+                    Err(error) => self.fail_guest_load(None, error),
+                }
+                return;
+            }
             match result {
                 Ok((track, url, remember_current, refresh_mix)) => {
                     if remember_current {
@@ -295,11 +317,15 @@ impl YtMusicApp {
                     } else {
                         self.current = Some(track.clone());
                     }
+                    // A Jam host holds a new track at 0:00 until its guests
+                    // have loaded it, so everyone hears the start together.
+                    let hold = self.should_hold_for_guests();
                     match self
                         .player
-                        .play_stream_at(&track, &url, &self.tools.mpv, 0.0, false)
+                        .play_stream_at(&track, &url, &self.tools.mpv, 0.0, hold)
                     {
                         Ok(()) => {
+                            self.jam_hold = hold.then(Instant::now);
                             self.status = "Playing".into();
                             self.error = None;
                             self.finished_handled = false;
@@ -318,89 +344,6 @@ impl YtMusicApp {
                     self.error = Some(AppError::Playback(e));
                 }
             }
-        }
-    }
-
-    fn jam_snapshot(&self) -> Option<PlaybackSnapshot> {
-        let track = self.current.as_ref().and_then(|track| {
-            jam::track_ref(&track.id, &track.title, &track.channel, track.duration)
-        });
-        Some(PlaybackSnapshot {
-            revision: self.jam_revision(),
-            track,
-            position_secs: self.player.position_seconds(),
-            playing: self.current.is_some() && !self.player.paused && !self.loading,
-            host_clock_ms: self.jam.clock_ms(),
-            scheduled_start_host_ms: None,
-        })
-    }
-
-    fn jam_revision(&self) -> u64 {
-        self.current
-            .as_ref()
-            .map(|track| track.id.bytes().map(u64::from).sum::<u64>())
-            .unwrap_or(0)
-    }
-
-    fn poll_jam(&mut self) {
-        for event in self.jam.poll() {
-            if let JamEvent::Snapshot(snapshot) = event {
-                self.jam_pending = Some(snapshot.clone());
-                if self.jam.info.role == Some(Role::Guest) {
-                    self.status = format!("Jam sync · revision {}", snapshot.revision);
-                    if let Some(track) = snapshot.track {
-                        if self.current.as_ref().map(|current| current.id.as_str())
-                            != Some(track.video_id.as_str())
-                            && !self.loading
-                        {
-                            self.start_track(
-                                Track {
-                                    title: track.title,
-                                    id: track.video_id,
-                                    duration: track.duration_secs,
-                                    channel: track.artist,
-                                },
-                                false,
-                                false,
-                            );
-                        }
-                    } else if self.current.is_some() {
-                        self.player.stop();
-                        self.current = None;
-                    }
-                }
-            }
-        }
-        if self.jam.info.role == Some(Role::Host) {
-            if let Some(snapshot) = self.jam_snapshot() {
-                self.jam.broadcast(snapshot);
-            }
-        }
-    }
-
-    fn reconcile_guest_playback(&mut self) {
-        if self.jam.info.role != Some(Role::Guest) || self.loading {
-            return;
-        }
-        let Some(snapshot) = self.jam_pending.clone() else {
-            return;
-        };
-        let Some(track) = &snapshot.track else {
-            return;
-        };
-        if self.current.as_ref().map(|current| current.id.as_str()) != Some(track.video_id.as_str())
-        {
-            return;
-        }
-        let expected = jam::expected_position(&snapshot, self.jam.host_now_ms());
-        if let jam::DriftAction::Seek(position) =
-            jam::drift_action(self.player.position_seconds(), expected)
-        {
-            self.player.seek(position);
-        }
-        let should_pause = !snapshot.playing;
-        if self.player.paused != should_pause {
-            self.player.set_paused(should_pause);
         }
     }
 }
@@ -443,105 +386,65 @@ impl YtMusicApp {
                 .resizable(false)
                 .exact_width(sidebar_width)
                 .show(ctx, |ui| {
-                    ui.add_space(6.0);
-                    ui.label(
-                        egui::RichText::new(format!("Queue  {}", self.queue.len()))
-                            .size(12.0)
-                            .color(accent),
-                    );
-                    ui.separator();
-                    ui.checkbox(&mut self.auto_mix, "Auto mix");
-                    ui.separator();
-                    ui.label(egui::RichText::new("LAN JAM").size(9.0).color(muted));
-                    if self.jam.info.role.is_none() {
-                        if ui.button("Host Jam").clicked() {
-                            let port = self.jam_port.parse::<u16>().unwrap_or(38_721);
-                            if let Err(error) = self.jam.host(port) {
-                                self.error = Some(AppError::Jam(error));
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            apply_text_sizes(ui, &responsive);
+                            ui.add_space(responsive.rem(0.375));
+                            ui.label(
+                                egui::RichText::new(format!("Queue  {}", self.queue.len()))
+                                    .size(responsive.font_body)
+                                    .color(accent),
+                            );
+                            ui.separator();
+                            ui.checkbox(&mut self.auto_mix, "Auto mix");
+                            ui.separator();
+                            self.show_jam_panel(ui, &responsive);
+                            ui.add_space(responsive.rem(0.375));
+                            ui.label(
+                                egui::RichText::new("YOUTUBE ACCESS")
+                                    .size(responsive.font_caption)
+                                    .color(muted),
+                            );
+                            egui::ComboBox::from_id_salt("cookie_browser")
+                                .selected_text(self.cookie_browser.label())
+                                .width(responsive.clamp_rem(85.0, 5.3125, 140.0))
+                                .show_ui(ui, |ui| {
+                                    apply_text_sizes(ui, &responsive);
+                                    ui.selectable_value(
+                                        &mut self.cookie_browser,
+                                        CookieBrowser::None,
+                                        "Off",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.cookie_browser,
+                                        CookieBrowser::Chrome,
+                                        "Chrome cookies",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.cookie_browser,
+                                        CookieBrowser::Edge,
+                                        "Edge cookies",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.cookie_browser,
+                                        CookieBrowser::Firefox,
+                                        "Firefox cookies",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.cookie_browser,
+                                        CookieBrowser::Helium,
+                                        "Helium cookies",
+                                    );
+                                });
+                            if let Some(error) = &self.error {
+                                ui.add_space(responsive.space_sm);
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(255, 135, 155),
+                                    error.to_string(),
+                                );
                             }
-                        }
-                        ui.horizontal(|ui| {
-                            ui.label("Port");
-                            ui.add_sized(
-                                [70.0, 22.0],
-                                egui::TextEdit::singleline(&mut self.jam_port),
-                            );
                         });
-                        ui.add_sized(
-                            [sidebar_width - 16.0, 22.0],
-                            egui::TextEdit::singleline(&mut self.jam_join_address)
-                                .hint_text("Host address:port"),
-                        );
-                        ui.add_sized(
-                            [sidebar_width - 16.0, 22.0],
-                            egui::TextEdit::singleline(&mut self.jam_join_token)
-                                .hint_text("Join token"),
-                        );
-                        if ui.button("Join Jam").clicked() {
-                            if let Err(error) =
-                                self.jam.join(&self.jam_join_address, &self.jam_join_token)
-                            {
-                                self.error = Some(AppError::Jam(error));
-                            }
-                        }
-                    } else {
-                        ui.label(
-                            egui::RichText::new(&self.jam.info.status)
-                                .size(10.0)
-                                .color(muted),
-                        );
-                        if self.jam.info.role == Some(Role::Host) {
-                            ui.small(format!("Share: {}", self.jam.info.address));
-                            ui.small(format!("Token: {}", self.jam.info.token));
-                            ui.small(format!("Guests: {}", self.jam.info.peers));
-                        }
-                        if ui
-                            .button(if self.jam.info.role == Some(Role::Host) {
-                                "End Jam"
-                            } else {
-                                "Leave Jam"
-                            })
-                            .clicked()
-                        {
-                            self.jam.leave();
-                        }
-                    }
-                    ui.add_space(6.0);
-                    ui.label(egui::RichText::new("YOUTUBE ACCESS").size(9.0).color(muted));
-                    egui::ComboBox::from_id_salt("cookie_browser")
-                        .selected_text(self.cookie_browser.label())
-                        .width(85.0)
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut self.cookie_browser,
-                                CookieBrowser::None,
-                                "Off",
-                            );
-                            ui.selectable_value(
-                                &mut self.cookie_browser,
-                                CookieBrowser::Chrome,
-                                "Chrome cookies",
-                            );
-                            ui.selectable_value(
-                                &mut self.cookie_browser,
-                                CookieBrowser::Edge,
-                                "Edge cookies",
-                            );
-                            ui.selectable_value(
-                                &mut self.cookie_browser,
-                                CookieBrowser::Firefox,
-                                "Firefox cookies",
-                            );
-                            ui.selectable_value(
-                                &mut self.cookie_browser,
-                                CookieBrowser::Helium,
-                                "Helium cookies",
-                            );
-                        });
-                    if let Some(error) = &self.error {
-                        ui.add_space(8.0);
-                        ui.colored_label(egui::Color32::from_rgb(255, 135, 155), error.to_string());
-                    }
                 });
         }
 
@@ -570,10 +473,17 @@ impl YtMusicApp {
             &icons,
             self.current.as_ref(),
             &self.results,
+            self.is_guest(),
             &responsive,
         );
         for action in home_actions {
             match action {
+                // A guest's picks become requests; only the host's queue plays.
+                HomeAction::PlaySearch(track) | HomeAction::AddToQueue(track)
+                    if self.is_guest() =>
+                {
+                    self.request_from_host(&track);
+                }
                 HomeAction::PlaySearch(track) => self.play_search_track(track),
                 HomeAction::AddToQueue(track) => self.queue.push_back(track),
             }
@@ -621,8 +531,8 @@ impl eframe::App for YtMusicApp {
         self.player.refresh_position();
         self.poll_background_work();
         self.poll_jam();
-        self.reconcile_guest_playback();
-        if self.player.is_finished() && !self.finished_handled && !self.loading {
+        let guest = self.is_guest();
+        if !guest && self.player.is_finished() && !self.finished_handled && !self.loading {
             self.finished_handled = true;
             if self.auto_mix && self.queue.len() < 2 {
                 if let Some(current) = self.current.clone() {
@@ -633,7 +543,14 @@ impl eframe::App for YtMusicApp {
                 self.next();
             }
         }
-        ctx.request_repaint_after(Duration::from_millis(250));
+        // A guest releases preloaded audio and corrects drift on frame
+        // boundaries, and a host's changes are noticed on them, so a session
+        // repaints faster than the idle interface needs to.
+        ctx.request_repaint_after(Duration::from_millis(match self.jam.info.role {
+            Some(Role::Guest) => 20,
+            Some(Role::Host) => 100,
+            None => 250,
+        }));
 
         self.render_responsive_layout(ctx);
     }
@@ -653,7 +570,9 @@ pub fn run() -> eframe::Result<()> {
         Box::new(|cc| {
             apply_windows_title_bar_colors(cc);
             egui_extras::install_image_loaders(&cc.egui_ctx);
-            Ok(Box::new(YtMusicApp::default()))
+            let mut app = YtMusicApp::default();
+            app.jam.start_discovery();
+            Ok(Box::new(app))
         }),
     )
 }
