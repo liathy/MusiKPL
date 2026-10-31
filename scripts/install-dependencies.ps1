@@ -70,13 +70,18 @@ try {
         }
         Push-Location $ProjectRoot
         try {
+            # mpv.exe and yt-dlp.exe are bundled into MusiKPL.exe by build.rs.
             cargo build --release
+            if ($LASTEXITCODE -ne 0) { throw 'cargo build --release failed.' }
             $releaseDir = Join-Path $ProjectRoot 'dist'
             New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
             Copy-Item (Join-Path $ProjectRoot 'target\release\MusiKPL.exe') $releaseDir -Force
-            Copy-Item (Join-Path $ProjectRoot 'mpv.exe') $releaseDir -Force
-            Copy-Item (Join-Path $ProjectRoot 'yt-dlp.exe') $releaseDir -Force
-            Write-Host "Portable build created at $releaseDir" -ForegroundColor Green
+            # Copies beside the exe would override the bundled tools.
+            foreach ($tool in 'mpv.exe', 'yt-dlp.exe') {
+                $old = Join-Path $releaseDir $tool
+                if (Test-Path $old) { Remove-Item $old -Force }
+            }
+            Write-Host "Portable build created at $releaseDir (single MusiKPL.exe)" -ForegroundColor Green
         }
         finally { Pop-Location }
     }

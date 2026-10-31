@@ -1,3 +1,4 @@
+pub(crate) mod bundled;
 pub(crate) mod mpv;
 pub(crate) mod process;
 pub(crate) mod settings;

@@ -1,6 +1,9 @@
 use crate::{
     domain::{Track, YtEntry},
-    infrastructure::process::{hide_console, run_registered, ProcessRegistry},
+    infrastructure::{
+        bundled,
+        process::{hide_console, run_registered, ProcessRegistry},
+    },
 };
 use std::{
     path::{Path, PathBuf},
@@ -14,20 +17,38 @@ pub(crate) struct Tools {
 }
 
 impl Tools {
+    /// Find mpv and yt-dlp, in order of preference:
+    ///
+    /// 1. Beside MusiKPL.exe, so a user can supply their own versions.
+    /// 2. The copies bundled inside release builds, unpacked once.
+    /// 3. In development builds, the project root.
     pub(crate) fn discover() -> Self {
-        let base = std::env::current_exe()
+        let beside_exe = std::env::current_exe()
             .ok()
             .and_then(|path| path.parent().map(Path::to_path_buf))
             .unwrap_or_else(|| PathBuf::from("."));
+        let mut folders = vec![beside_exe.clone()];
+        folders.extend(bundled::unpack());
+        #[cfg(debug_assertions)]
+        folders.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+
+        let find = |name: &str| {
+            folders
+                .iter()
+                .map(|folder| folder.join(name))
+                .find(|path| path.is_file())
+                .unwrap_or_else(|| beside_exe.join(name))
+        };
         Self {
-            mpv: base.join("mpv.exe"),
-            yt_dlp: base.join("yt-dlp.exe"),
+            mpv: find("mpv.exe"),
+            yt_dlp: find("yt-dlp.exe"),
         }
     }
+
     pub(crate) fn ready(&self) -> Result<(), String> {
         if !self.mpv.exists() || !self.yt_dlp.exists() {
             return Err(format!(
-                "Place mpv.exe and yt-dlp.exe next to the MusiKPL executable. Missing: {}{}",
+                "MusiKPL couldn't find its playback tools. Place mpv.exe and yt-dlp.exe next to MusiKPL.exe. Missing: {}{}",
                 if self.mpv.exists() { "" } else { "mpv.exe " },
                 if self.yt_dlp.exists() {
                     ""
