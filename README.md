@@ -18,7 +18,8 @@ MusiKPL brings music discovery, queue management, automatic mixes, synchronized 
 - **Cover Art** — YouTube thumbnails, or square album art from Last.fm when it knows the song.
 - **Queue Management** — A queue drawer to see what's playing and up next, play any song, or remove it.
 - **Auto Mix** — Keeps the queue filled with songs like the one playing. It refills in the background before the queue runs out, falls back to the artist's songs when YouTube has no Mix, retries when a search fails, and skips songs you've already heard. Songs you add with **+** play first and are kept when you start a new mix.
-- **LAN Jam** — Listen together over your local network with synchronized playback; join nearby Jams with one click.
+- **LAN Jam** — Listen together over your local network with synchronized playback; join nearby Jams with one click. Works on PCs with VPN or virtual network adapters too.
+- **Internet Jam** — Invite friends anywhere with a copy-paste invite: no account, no port forwarding. Connections are end-to-end encrypted, and only people with the invite can join.
 - **Host & Guest Permissions** — Hosts control playback while guests can request music for the queue.
 - **Last.fm Scrobbling** — Now playing and scrobbles, following Last.fm's rules.
 - **Start with Windows** — Optional, from Settings.
@@ -62,6 +63,7 @@ To scrobble to Last.fm:
 - The app draws only when something changes: about 0 % CPU when idle and around 5 % of one core while a long title scrolls, with frames capped at 60 per second.
 - `yt-dlp` runs only for a few seconds per search or song lookup, and `mpv` only while music plays.
 - Nothing is drawn while the window is minimized; playback, Jams, and scrobbling keep running.
+- Internet Jam networking starts only while an internet Jam is active and stops when it ends.
 
 ## 🛠️ Built With
 
@@ -72,6 +74,7 @@ To scrobble to Last.fm:
 | [yt-dlp](https://github.com/yt-dlp/yt-dlp) | Media search and audio stream resolution |
 | [mpv](https://mpv.io/) | Audio playback |
 | [Last.fm API](https://www.last.fm/api) | Scrobbling and album art |
+| [iroh](https://www.iroh.computer/) | Encrypted peer-to-peer connections for internet Jams |
 
 ## 🧑‍💻 Development
 
@@ -127,15 +130,28 @@ cargo clippy --all-targets
 cargo test
 ```
 
-## 🎧 LAN Jam
+## 🎧 Jam
 
-MusiKPL includes a local-network listening feature designed to make listening together simple:
+Listen together in sync, on your home network or over the internet. Everyone streams the audio themselves; the Jam only keeps playback in sync.
+
+### On your network (LAN Jam)
 
 1. Open the menu and press **Start** to host a Jam, or press **Join** on a nearby Jam.
 2. Guests hear the host's music in sync; the host controls playback and track changes.
 3. Guests press **+** on a song to request it, and the host accepts or declines.
 
-Discovery depends on your network: networks that block broadcast or isolate devices may not show nearby Jams.
+### Over the internet (Internet Jam)
+
+1. Everyone uses MusiKPL 2.2.0 or newer.
+2. The host starts a Jam, then under **Invite over the internet** presses **Create invite** and **Copy invite**, and sends the `musikpl:…` text to friends.
+3. Friends paste it under **Join over the internet** in the menu and press **Join**.
+
+Internet Jams use [iroh](https://www.iroh.computer/): devices connect directly when their routers allow it, and through iroh's public relay servers otherwise. Every connection is end-to-end encrypted (relays only forward encrypted data), and only MusiKPL's Jam protocol is accepted. Each Jam gets a new secret inside its invite, so only people with the invite can join, and the invite stops working when the Jam ends. Anyone who has the invite can join while the Jam runs, so share it only with people you want to listen with.
+
+### If a Jam doesn't show up
+
+- Windows Firewall blocks Jams for a copy of MusiKPL it has no rule for, or allows it only on Private networks. Press **Allow through firewall** in the menu's Jam section (shown when no Jams are found, or while you host a Jam nobody has joined) and accept the Windows prompt. Do this on **both** PCs.
+- Some routers, often on guest Wi-Fi, isolate devices from each other, which blocks LAN Jams. Use an internet Jam instead.
 
 ## 🗺️ Roadmap
 
@@ -143,6 +159,7 @@ Potential areas for future development include:
 
 - [ ] Further improve LAN session discovery and connection reliability.
 - [ ] Refine playback synchronization across devices.
+- [ ] Optionally run a dedicated relay server for internet Jams.
 - [ ] Expand music discovery and automatic mix recommendations.
 - [ ] Add screenshots to this README.
 
