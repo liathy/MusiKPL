@@ -12,10 +12,7 @@ pub(crate) struct Queue {
 }
 
 impl Queue {
-    pub(crate) fn clear(&mut self) {
-        self.items.clear();
-    }
-
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
@@ -60,6 +57,24 @@ impl Queue {
         self.push_back(track);
         true
     }
+
+    /// Insert at `index` (clamped to the end) unless the song is queued.
+    pub(crate) fn insert_unique(&mut self, index: usize, track: Track) -> bool {
+        if self.contains_id(&track.id) {
+            return false;
+        }
+        self.items.insert(index.min(self.items.len()), track);
+        true
+    }
+
+    /// Position of the first track matching `predicate`.
+    pub(crate) fn position(&self, predicate: impl Fn(&Track) -> bool) -> Option<usize> {
+        self.items.iter().position(predicate)
+    }
+
+    pub(crate) fn retain(&mut self, keep: impl FnMut(&Track) -> bool) {
+        self.items.retain(keep);
+    }
 }
 
 #[cfg(test)]
@@ -86,6 +101,21 @@ mod tests {
             queue.iter().last().map(|track| track.id.as_str()),
             Some("two")
         );
+    }
+
+    #[test]
+    fn inserts_and_filters_in_place() {
+        let mut queue = Queue::default();
+        queue.push_back(track("a"));
+        queue.push_back(track("b"));
+        assert!(queue.insert_unique(1, track("mine")));
+        assert!(!queue.insert_unique(0, track("a")));
+        assert!(queue.insert_unique(99, track("end")));
+        let ids = |queue: &Queue| queue.iter().map(|t| t.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&queue), ["a", "mine", "b", "end"]);
+        assert_eq!(queue.position(|t| t.id == "b"), Some(2));
+        queue.retain(|t| t.id != "a");
+        assert_eq!(ids(&queue), ["mine", "b", "end"]);
     }
 
     #[test]
