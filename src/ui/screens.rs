@@ -21,6 +21,7 @@ use crate::{
 pub(crate) enum ResultAction {
     Play(Track),
     AddToMix(Track),
+    ToggleLike(Track),
 }
 
 pub(crate) struct ResultsView<'a> {
@@ -32,6 +33,7 @@ pub(crate) struct ResultsView<'a> {
     pub(crate) guest: bool,
     pub(crate) covers: &'a CoverArt,
     pub(crate) in_mix: &'a dyn Fn(&str) -> bool,
+    pub(crate) liked: &'a dyn Fn(&str) -> bool,
 }
 
 pub(crate) fn show_results(
@@ -91,7 +93,7 @@ fn grid(
     r: &ResponsiveUi,
     actions: &mut Vec<ResultAction>,
 ) {
-    let card = vec2(r.rem(11.4375), r.rem(15.3125));
+    let card = card_size(r);
     let gap = r.rem(1.0);
     let columns = grid_columns(ui.available_width(), card.x, gap);
     ui.spacing_mut().item_spacing = vec2(gap, gap);
@@ -115,7 +117,47 @@ fn result_card(
     r: &ResponsiveUi,
     actions: &mut Vec<ResultAction>,
 ) {
+    let cards = CardContext {
+        guest: view.guest,
+        covers: view.covers,
+        in_mix: view.in_mix,
+        liked: view.liked,
+    };
+    if let Some(action) = song_card(ui, size, track, &cards, icons, theme, r) {
+        actions.push(action);
+    }
+}
+
+/// What song cards need to know besides the song.
+pub(crate) struct CardContext<'a> {
+    pub(crate) guest: bool,
+    pub(crate) covers: &'a CoverArt,
+    pub(crate) in_mix: &'a dyn Fn(&str) -> bool,
+    pub(crate) liked: &'a dyn Fn(&str) -> bool,
+}
+
+/// The card size used in grids and Home rows.
+pub(crate) fn card_size(r: &ResponsiveUi) -> egui::Vec2 {
+    vec2(r.rem(11.4375), r.rem(15.3125))
+}
+
+/// A song card: cover, title, artist, with Like on the cover's top-right
+/// and Add to mix on its bottom-right. Clicking the card plays the song.
+/// Cards scrolled out of view only take up space, so their covers aren't
+/// downloaded or decoded until they are seen.
+pub(crate) fn song_card(
+    ui: &mut Ui,
+    size: egui::Vec2,
+    track: &Track,
+    view: &CardContext<'_>,
+    icons: &IconTextures,
+    theme: &Theme,
+    r: &ResponsiveUi,
+) -> Option<ResultAction> {
     let (rect, card) = ui.allocate_exact_size(size, Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return None;
+    }
     let hover = pointer_amount(ui, &card);
     let rounding = r.rem(0.625);
     ui.painter().rect(
@@ -190,25 +232,69 @@ fn result_card(
         (false, true) => "In your mix",
         (false, false) => "Add to mix",
     };
+
+    // ♥ Like, on the cover's top-right corner: always shown when liked,
+    // otherwise while the card is hovered.
+    let liked = (view.liked)(&track.id);
+    let heart_rect = Rect::from_min_size(
+        pos2(
+            cover_rect.right() - button_size - r.rem(0.5),
+            cover_rect.top() + r.rem(0.5),
+        ),
+        egui::Vec2::splat(button_size),
+    );
+    let heart = ui.interact(heart_rect, item_id("like", &track.id), Sense::click());
+    let heart_hover = hover_amount(ui, &heart);
+    let heart_shown = if liked { 1.0 } else { hover.max(heart_hover) };
+    if heart_shown > 0.0 {
+        let painter = ui.painter();
+        painter.circle_filled(
+            heart_rect.center(),
+            button_size / 2.0,
+            Color32::from_black_alpha((178.0 * heart_shown) as u8),
+        );
+        paint_icon(
+            painter,
+            if liked {
+                &icons.heart_filled
+            } else {
+                &icons.heart
+            },
+            Rect::from_center_size(heart_rect.center(), r.rem2(1.0, 1.0)),
+            mix(
+                Color32::TRANSPARENT,
+                mix(
+                    theme.text,
+                    theme.like,
+                    if liked { 1.0 } else { heart_hover },
+                ),
+                heart_shown,
+            ),
+        );
+    }
+
+    if heart
+        .on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text(if liked { "Unlike" } else { "Like" })
+        .clicked()
+    {
+        return Some(ResultAction::ToggleLike(track.clone()));
+    }
     if add
         .on_hover_cursor(CursorIcon::PointingHand)
         .on_hover_text(tooltip)
         .clicked()
     {
-        if !added {
-            actions.push(ResultAction::AddToMix(track.clone()));
-        }
-    } else if card
-        .on_hover_cursor(CursorIcon::PointingHand)
+        return (!added).then(|| ResultAction::AddToMix(track.clone()));
+    }
+    card.on_hover_cursor(CursorIcon::PointingHand)
         .on_hover_text(if view.guest {
             "Request from the host"
         } else {
             "Play"
         })
         .clicked()
-    {
-        actions.push(ResultAction::Play(track.clone()));
-    }
+        .then(|| ResultAction::Play(track.clone()))
 }
 
 fn empty_state(ui: &mut Ui, area: Rect, view: &ResultsView<'_>, theme: &Theme, r: &ResponsiveUi) {

@@ -4,6 +4,10 @@ version = "2.2.0"
 edition = "2021"
 description = "A native, audio-only YouTube player powered by mpv and yt-dlp"
 
+# The setup (installer/) builds separately: scripts/build-release.ps1.
+[workspace]
+members = [".", "installer"]
+
 [[bin]]
 name = "MusiKPL"
 path = "src/main.rs"

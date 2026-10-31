@@ -2,13 +2,40 @@
 //! `%APPDATA%\MusiKPL\settings.json`.
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+use super::storage;
+
+const FILE: &str = "settings.json";
+/// Recent searches remembered for the search box.
+pub(crate) const MAX_RECENT_SEARCHES: usize = 10;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Settings {
     pub(crate) start_with_windows: bool,
     pub(crate) lastfm: LastFmSettings,
+    pub(crate) volume: u8,
+    pub(crate) auto_mix: bool,
+    /// Newest first.
+    pub(crate) recent_searches: Vec<String>,
+    /// Genres picked on first run, used until listening history takes over.
+    pub(crate) favorite_genres: Vec<String>,
+    /// The first-run genre picker was completed or skipped.
+    pub(crate) onboarded: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            start_with_windows: false,
+            lastfm: LastFmSettings::default(),
+            volume: 100,
+            auto_mix: true,
+            recent_searches: Vec::new(),
+            favorite_genres: Vec::new(),
+            onboarded: false,
+        }
+    }
 }
 
 /// Last.fm API credentials and the session granted after the user approved
@@ -30,31 +57,29 @@ impl LastFmSettings {
 
 impl Settings {
     pub(crate) fn load() -> Self {
-        settings_path()
-            .and_then(|path| std::fs::read_to_string(path).ok())
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default()
+        storage::read(FILE).unwrap_or_default()
     }
 
     pub(crate) fn save(&self) -> Result<(), String> {
-        let path = settings_path().ok_or("Could not find the AppData folder")?;
-        if let Some(folder) = path.parent() {
-            std::fs::create_dir_all(folder)
-                .map_err(|e| format!("Could not create the settings folder: {e}"))?;
-        }
-        let text = serde_json::to_string_pretty(self)
-            .map_err(|e| format!("Could not encode settings: {e}"))?;
-        // Write beside the file and swap it in, so a crash never leaves
-        // half-written settings behind.
-        let temporary = path.with_extension("json.tmp");
-        std::fs::write(&temporary, text).map_err(|e| format!("Could not save settings: {e}"))?;
-        std::fs::rename(&temporary, &path).map_err(|e| format!("Could not save settings: {e}"))
+        storage::write(FILE, self)
     }
-}
 
-fn settings_path() -> Option<PathBuf> {
-    let base = std::env::var_os("APPDATA").or_else(|| std::env::var_os("HOME"))?;
-    Some(PathBuf::from(base).join("MusiKPL").join("settings.json"))
+    /// Save without making the interface wait, for frequent small changes.
+    pub(crate) fn save_in_background(&self) {
+        storage::write_in_background(FILE, self);
+    }
+
+    /// Remember a search, newest first, without duplicates.
+    pub(crate) fn remember_search(&mut self, query: &str) {
+        let query = query.trim();
+        if query.is_empty() {
+            return;
+        }
+        self.recent_searches
+            .retain(|known| !known.eq_ignore_ascii_case(query));
+        self.recent_searches.insert(0, query.to_owned());
+        self.recent_searches.truncate(MAX_RECENT_SEARCHES);
+    }
 }
 
 #[cfg(test)]
@@ -68,6 +93,10 @@ mod tests {
         assert_eq!(settings.lastfm.api_key, "k");
         assert!(!settings.start_with_windows);
         assert!(!settings.lastfm.connected());
+        // Settings saved by older versions keep today's behavior.
+        assert_eq!(settings.volume, 100);
+        assert!(settings.auto_mix);
+        assert!(!settings.onboarded);
     }
 
     #[test]
@@ -80,5 +109,19 @@ mod tests {
         assert!(!lastfm.connected());
         lastfm.session_key = "sk".into();
         assert!(lastfm.connected());
+    }
+
+    #[test]
+    fn recent_searches_are_newest_first_unique_and_bounded() {
+        let mut settings = Settings::default();
+        for query in ["queen", "daft punk", "Queen", "  "] {
+            settings.remember_search(query);
+        }
+        assert_eq!(settings.recent_searches, ["Queen", "daft punk"]);
+        for index in 0..20 {
+            settings.remember_search(&format!("search {index}"));
+        }
+        assert_eq!(settings.recent_searches.len(), MAX_RECENT_SEARCHES);
+        assert_eq!(settings.recent_searches[0], "search 19");
     }
 }

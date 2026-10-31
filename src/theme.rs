@@ -28,6 +28,8 @@ pub(crate) struct Theme {
     pub(crate) danger: Color32,
     pub(crate) success: Color32,
     pub(crate) warning: Color32,
+    /// Liked songs' heart.
+    pub(crate) like: Color32,
 }
 
 impl Default for Theme {
@@ -47,6 +49,7 @@ impl Default for Theme {
             danger: Color32::from_rgb(229, 72, 77),
             success: Color32::from_rgb(76, 194, 108),
             warning: Color32::from_rgb(232, 176, 64),
+            like: Color32::from_rgb(255, 77, 109),
         }
     }
 }

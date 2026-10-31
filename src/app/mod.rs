@@ -2,25 +2,28 @@ mod actions;
 mod automix;
 mod errors;
 mod jam_sync;
+mod library;
 mod settings;
+mod updates;
 
 use crate::{
     domain::{song_info, CoverArt, Track},
     infrastructure::{process::ProcessRegistry, settings::Settings},
     jam::{JamController, Role},
-    lastfm::{LastFm, ScrobbleTracker},
+    lastfm::{lookup_key, LastFm, ScrobbleTracker},
     media::{query_ytdlp, resolve_audio_url, Tools},
     playback::{Player, Queue},
     recommendations::History,
     theme::Theme,
     ui::{
         footer::{self, FooterState},
+        home::{self, HomeAction, HomeRowView, HomeView},
         icons::IconTextures,
         layout::window_layout,
-        overlays::{self, MenuAction, QueueAction, QueueView, SettingsPage},
+        overlays::{self, MenuAction, MenuView, QueueAction, QueueView, SettingsPage},
         responsive::ResponsiveUi,
-        screens::{self, ResultAction, ResultsView},
-        topbar::{self, TopBarAction},
+        screens::{self, CardContext, ResultAction, ResultsView},
+        topbar::{self, TopBarAction, TopBarState},
     },
 };
 use eframe::egui;
@@ -29,7 +32,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use self::{automix::AutoMix, errors::AppError, jam_sync::GuestSync, settings::LastFmConnect};
+use self::{
+    automix::AutoMix, errors::AppError, jam_sync::GuestSync, library::Library,
+    settings::LastFmConnect, updates::Updates,
+};
 
 /// A resolved stream: the track, its URL, and whether the track it
 /// replaces belongs in the history.
@@ -39,14 +45,12 @@ type PlayResult = Result<(Track, String, bool), String>;
 /// of skipping to the next one.
 const MAX_FAILED_SKIPS: u32 = 3;
 
-/// The floating panel that is open, if any.
+/// What the main area shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum Overlay {
+enum View {
     #[default]
-    None,
-    Menu,
-    Queue,
-    Settings,
+    Home,
+    Search,
 }
 
 struct YtMusicApp {
@@ -83,7 +87,21 @@ struct YtMusicApp {
     firewall_rx: Option<Receiver<Result<(), String>>>,
     /// The invite being pasted to join a Jam over the internet.
     jam_invite_input: String,
-    overlay: Overlay,
+    view: View,
+    /// The docked menu and queue; both may be open, and they stay open.
+    menu_open: bool,
+    queue_open: bool,
+    settings_open: bool,
+    /// The user's taste, likes, session, and Home.
+    library: Library,
+    updates: Updates,
+    /// The last session's song is shown paused at this position but not
+    /// loaded yet; pressing play loads it from here.
+    resume_at: Option<f64>,
+    /// Where the song being loaded starts.
+    start_at: f64,
+    /// The first-run (or Settings) genre picker is showing, with its picks.
+    genre_picks: Option<Vec<String>>,
     settings_page: SettingsPage,
     settings: Settings,
     /// Problem to show on the settings screen.
@@ -145,7 +163,15 @@ impl Default for YtMusicApp {
             jam_hold: None,
             firewall_rx: None,
             jam_invite_input: String::new(),
-            overlay: Overlay::None,
+            view: View::Home,
+            menu_open: false,
+            queue_open: false,
+            settings_open: false,
+            library: Library::default(),
+            updates: Updates::default(),
+            resume_at: None,
+            start_at: 0.0,
+            genre_picks: None,
             settings_page: SettingsPage::General,
             settings: Settings::default(),
             settings_error: None,
@@ -169,6 +195,9 @@ impl YtMusicApp {
         }
         self.searching = true;
         self.error = None;
+        self.view = View::Search;
+        self.settings.remember_search(&query);
+        self.library.settings_changed = true;
         self.results_query = query.clone();
         let tools = self.tools.clone();
         let single = query.starts_with("http://") || query.starts_with("https://");
@@ -199,7 +228,13 @@ impl YtMusicApp {
     }
 
     fn start_track(&mut self, track: Track, remember_current: bool) {
+        self.start_track_at(track, remember_current, 0.0);
+    }
+
+    fn start_track_at(&mut self, track: Track, remember_current: bool, start_at: f64) {
         self.player.stop();
+        self.resume_at = None;
+        self.start_at = start_at;
         self.loading = true;
         self.automix.waiting = false;
         self.pending_track = Some(track.clone());
@@ -228,6 +263,7 @@ impl YtMusicApp {
             return;
         }
         self.player.stop();
+        self.resume_at = None;
         self.play_rx = None;
         self.loading = false;
         if let Some(pending) = self.pending_track.take() {
@@ -303,9 +339,10 @@ impl YtMusicApp {
                     // A Jam host holds a new track at 0:00 until its guests
                     // have loaded it, so everyone hears the start together.
                     let hold = self.should_hold_for_guests();
+                    let start_at = std::mem::take(&mut self.start_at);
                     match self
                         .player
-                        .play_stream_at(&track, &url, &self.tools.mpv, 0.0, hold)
+                        .play_stream_at(&track, &url, &self.tools.mpv, start_at, hold)
                     {
                         Ok(()) => {
                             self.jam_hold = hold.then(Instant::now);
@@ -338,6 +375,7 @@ impl YtMusicApp {
     fn retire_covers(&mut self, old: Vec<Track>) {
         for track in old {
             let still_shown = self.results.iter().any(|t| t.id == track.id)
+                || self.library.home_tracks().any(|t| t.id == track.id)
                 || self.queue.contains_id(&track.id)
                 || self.current.as_ref().is_some_and(|t| t.id == track.id)
                 || self
@@ -364,7 +402,9 @@ impl YtMusicApp {
             None if self.searching
                 || self.loading
                 || self.automix.busy()
-                || self.automix.waiting =>
+                || self.automix.waiting
+                || self.updates.busy()
+                || self.library.building_home() =>
             {
                 PLAYING_TICK
             }
@@ -383,15 +423,17 @@ impl YtMusicApp {
 
     /// Ask Last.fm for album art of every song on screen, once each.
     fn request_covers(&mut self) {
-        let api_key = self.settings.lastfm.api_key.trim();
-        if api_key.is_empty() {
+        let Some(api_key) = lookup_key(&self.settings.lastfm.api_key) else {
             return;
-        }
+        };
+        let home = (self.view == View::Home).then(|| self.library.home_tracks());
+        let results = (self.view == View::Search).then_some(self.results.iter());
         let tracks = self
             .current
             .iter()
             .chain(self.pending_track.iter())
-            .chain(self.results.iter())
+            .chain(results.into_iter().flatten())
+            .chain(home.into_iter().flatten())
             .chain(self.queue.iter().take(20));
         for track in tracks {
             if self.cover_art.has_looked_up(&track.id) {
@@ -399,16 +441,102 @@ impl YtMusicApp {
             }
             self.cover_art.mark_pending(&track.id);
             self.lastfm.submit(crate::lastfm::LastFmJob::AlbumArt {
-                api_key: api_key.to_owned(),
+                api_key: api_key.clone(),
                 video_id: track.id.clone(),
                 song: song_info(track),
             });
         }
     }
+
+    /// Play or pause. The last session's song is loaded on the first play,
+    /// from where it was left.
+    fn toggle_pause(&mut self) {
+        if let Some(position) = self.resume_at {
+            if let Some(track) = self.current.clone() {
+                self.failed_plays = 0;
+                self.start_track_at(track, false, position);
+                return;
+            }
+            self.resume_at = None;
+        }
+        // Pressing play while waiting for guests starts right away.
+        self.jam_hold = None;
+        self.player.set_paused(!self.player.paused);
+    }
+
+    fn seek(&mut self, position: f64) {
+        if self.resume_at.is_some() {
+            self.resume_at = Some(position);
+            self.player.show_paused_at(position);
+        } else {
+            self.player.seek(position);
+        }
+    }
+
+    fn set_volume(&mut self, volume: u8) {
+        self.player.volume = volume;
+        self.player
+            .send(&format!("[\"set_property\",\"volume\",{volume}]"));
+        self.settings.volume = volume;
+        self.library.settings_changed = true;
+    }
+
+    fn apply_card_action(&mut self, action: ResultAction) {
+        let guest = self.is_guest();
+        match action {
+            ResultAction::ToggleLike(track) => self.toggle_like(&track),
+            // A guest's picks become requests; only the host's queue plays.
+            ResultAction::Play(track) | ResultAction::AddToMix(track) if guest => {
+                self.request_from_host(&track);
+            }
+            ResultAction::Play(track) => self.play_search_track(track),
+            ResultAction::AddToMix(track) => self.add_to_queue(track),
+        }
+    }
+
+    fn apply_home_action(&mut self, action: HomeAction) {
+        match action {
+            HomeAction::Card(action) => self.apply_card_action(action),
+            HomeAction::Refresh => self.refresh_home(true),
+            HomeAction::ToggleGenre(genre) => {
+                if let Some(picks) = &mut self.genre_picks {
+                    if let Some(index) = picks.iter().position(|pick| *pick == genre) {
+                        picks.remove(index);
+                    } else {
+                        picks.push(genre);
+                    }
+                }
+            }
+            HomeAction::FinishGenres => {
+                let picks = self.genre_picks.take().unwrap_or_default();
+                let changed = picks != self.settings.favorite_genres;
+                self.settings.favorite_genres = picks;
+                self.finish_onboarding(changed);
+            }
+            HomeAction::SkipGenres => {
+                self.genre_picks = None;
+                self.finish_onboarding(false);
+            }
+        }
+    }
+
+    fn finish_onboarding(&mut self, genres_changed: bool) {
+        self.settings.onboarded = true;
+        self.library.settings_changed = true;
+        self.refresh_home(genres_changed);
+    }
+
+    /// Open the genre picker on Home, starting from the saved picks.
+    fn pick_genres(&mut self) {
+        self.genre_picks = Some(self.settings.favorite_genres.clone());
+        self.view = View::Home;
+        self.settings_open = false;
+    }
 }
 
 impl Drop for YtMusicApp {
     fn drop(&mut self) {
+        self.save_library(true);
         self.player.stop();
         self.registry.terminate_all();
     }
@@ -437,8 +565,26 @@ impl YtMusicApp {
         let guest = self.is_guest();
 
         let mut top_actions = Vec::new();
-        let mut result_actions = Vec::new();
+        let mut card_actions = Vec::new();
+        let mut home_actions = Vec::new();
         let mut footer_actions = Vec::new();
+        let mut menu_actions = Vec::new();
+        let mut menu_data = None;
+        let mut queue_actions = Vec::new();
+        let menu_open = overlays::open_amount(ctx, "menu", self.menu_open);
+        let queue_open = overlays::open_amount(ctx, "queue", self.queue_open);
+        // The docked panels take their width from the main area, which
+        // shrinks to make room instead of being covered.
+        let content = egui::Rect::from_min_max(
+            egui::pos2(
+                layout.main.left() + overlays::menu_width(&r) * menu_open,
+                layout.main.top(),
+            ),
+            egui::pos2(
+                layout.main.right() - overlays::queue_width(&r) * queue_open,
+                layout.main.bottom(),
+            ),
+        );
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(theme.background))
             .show(ctx, |ui| {
@@ -446,7 +592,11 @@ impl YtMusicApp {
                     ui,
                     layout.top_bar,
                     &mut self.search,
-                    self.overlay == Overlay::Menu,
+                    &TopBarState {
+                        menu_open: self.menu_open,
+                        home_open: self.view == View::Home,
+                        recent: &self.settings.recent_searches,
+                    },
                     &icons,
                     &r,
                 );
@@ -457,26 +607,90 @@ impl YtMusicApp {
 
                 let queue = &self.queue;
                 let in_mix = |id: &str| queue.contains_id(id);
-                result_actions = screens::show_results(
-                    ui,
-                    layout.main,
-                    &ResultsView {
-                        results: &self.results,
-                        query: &self.results_query,
-                        searching: self.searching,
-                        guest,
-                        covers: &self.cover_art,
-                        in_mix: &in_mix,
-                    },
-                    &icons,
-                    &r,
-                );
-
-                let shown = if self.loading {
-                    self.pending_track.as_ref().or(self.current.as_ref())
-                } else {
-                    self.current.as_ref()
+                let taste = &self.library.taste;
+                let liked = |id: &str| taste.is_liked(id);
+                let cards = CardContext {
+                    guest,
+                    covers: &self.cover_art,
+                    in_mix: &in_mix,
+                    liked: &liked,
                 };
+                match self.view {
+                    View::Home => {
+                        home_actions = home::show(
+                            ui,
+                            content,
+                            &HomeView {
+                                rows: self.home_rows(),
+                                building: self.library.building_home(),
+                                picking_genres: self.genre_picks.as_deref(),
+                                cards,
+                            },
+                            &icons,
+                            &r,
+                        );
+                    }
+                    View::Search => {
+                        card_actions = screens::show_results(
+                            ui,
+                            content,
+                            &ResultsView {
+                                results: &self.results,
+                                query: &self.results_query,
+                                searching: self.searching,
+                                guest,
+                                covers: &self.cover_art,
+                                in_mix: &in_mix,
+                                liked: &liked,
+                            },
+                            &icons,
+                            &r,
+                        );
+                    }
+                }
+
+                if menu_open > 0.0 {
+                    let data = self.jam_panel_data();
+                    // The view borrows the app, so the invite field is
+                    // edited on the side and put back afterwards.
+                    let mut invite = std::mem::take(&mut self.jam_invite_input);
+                    let actions = overlays::show_menu(
+                        ui,
+                        layout.main,
+                        menu_open,
+                        &icons,
+                        &MenuView {
+                            auto_mix: self.auto_mix,
+                            jam: self.jam_view(&data),
+                            update: self.updates.view(),
+                        },
+                        &mut invite,
+                        &r,
+                    );
+                    self.jam_invite_input = invite;
+                    menu_actions = actions;
+                    menu_data = Some(data);
+                }
+                if queue_open > 0.0 {
+                    let now_playing = self.shown_track().cloned();
+                    let snapshot: Vec<Track> = self.queue.iter().cloned().collect();
+                    queue_actions = overlays::show_queue(
+                        ui,
+                        layout.main,
+                        queue_open,
+                        &icons,
+                        &QueueView {
+                            now_playing: now_playing.as_ref(),
+                            queue: &snapshot,
+                            mixing: self.automix.busy(),
+                            guest,
+                            covers: &self.cover_art,
+                        },
+                        &r,
+                    );
+                }
+
+                let shown = self.shown_track();
                 let duration = self
                     .current
                     .as_ref()
@@ -501,7 +715,8 @@ impl YtMusicApp {
                         duration: if self.loading { 0.0 } else { duration },
                         volume: self.player.volume,
                         guest,
-                        queue_open: self.overlay == Overlay::Queue,
+                        queue_open: self.queue_open,
+                        liked: shown.is_some_and(|track| self.is_liked(&track.id)),
                     },
                     &r,
                 );
@@ -509,8 +724,16 @@ impl YtMusicApp {
 
         for action in top_actions {
             match action {
-                TopBarAction::ToggleMenu => self.toggle_overlay(Overlay::Menu),
+                TopBarAction::ToggleMenu => self.menu_open = !self.menu_open,
+                TopBarAction::Home => {
+                    self.view = View::Home;
+                    self.refresh_home(false);
+                }
                 TopBarAction::Search => self.search(),
+                TopBarAction::SearchFor(query) => {
+                    self.search = query;
+                    self.search();
+                }
                 TopBarAction::StartDrag => ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag),
                 TopBarAction::Minimize => {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true))
@@ -518,29 +741,58 @@ impl YtMusicApp {
                 TopBarAction::Close => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             }
         }
-        for action in result_actions {
+        for action in card_actions {
+            self.apply_card_action(action);
+        }
+        for action in home_actions {
+            self.apply_home_action(action);
+        }
+        for action in menu_actions {
             match action {
-                // A guest's picks become requests; only the host's queue plays.
-                ResultAction::Play(track) | ResultAction::AddToMix(track) if guest => {
-                    self.request_from_host(&track);
+                MenuAction::Close => self.menu_open = false,
+                MenuAction::OpenSettings => {
+                    self.settings_page = SettingsPage::General;
+                    self.settings_error = None;
+                    self.settings_open = true;
                 }
-                ResultAction::Play(track) => self.play_search_track(track),
-                ResultAction::AddToMix(track) => self.add_to_queue(track),
+                MenuAction::ToggleAutoMix => self.set_auto_mix(!self.auto_mix),
+                MenuAction::Jam(action) => {
+                    if let Some(data) = &menu_data {
+                        self.apply_jam_action(action, data);
+                    }
+                }
+                MenuAction::CheckForUpdates => self.check_for_updates(),
+                MenuAction::InstallUpdate => self.install_update(),
+            }
+        }
+        for action in queue_actions {
+            match action {
+                QueueAction::Close => self.queue_open = false,
+                QueueAction::Play(track) => {
+                    self.queue.remove_id(&track.id);
+                    self.play_queue_track(track);
+                }
+                QueueAction::Remove(index) => {
+                    self.queue.remove(index);
+                }
             }
         }
         for action in footer_actions {
             actions::apply_footer_action(self, action);
         }
 
-        self.render_overlays(ctx, window, &layout, &icons, &r);
+        if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            self.settings_open = false;
+        }
+        let settings = overlays::open_amount(ctx, "settings", self.settings_open);
+        if settings > 0.0 {
+            self.render_settings(ctx, window, settings, &icons, &r);
+        }
 
         // The settings window covers the main area and shows its own errors.
-        let error = self
-            .error
-            .as_ref()
-            .filter(|_| self.overlay != Overlay::Settings);
+        let error = self.error.as_ref().filter(|_| !self.settings_open);
         if let Some(error) = error {
-            if screens::error_toast(ctx, layout.main, &error.to_string(), &icons, &r) {
+            if screens::error_toast(ctx, content, &error.to_string(), &icons, &r) {
                 self.error = None;
             }
         }
@@ -557,101 +809,37 @@ impl YtMusicApp {
         );
     }
 
-    fn toggle_overlay(&mut self, overlay: Overlay) {
-        self.overlay = if self.overlay == overlay {
-            Overlay::None
-        } else {
-            overlay
-        };
-    }
-
-    fn render_overlays(
-        &mut self,
-        ctx: &egui::Context,
-        window: egui::Rect,
-        layout: &crate::ui::layout::WindowLayout,
-        icons: &IconTextures,
-        r: &ResponsiveUi,
-    ) {
-        if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
-            self.overlay = Overlay::None;
+    /// Home's rows: the first two built from the user's favorites, then
+    /// Liked songs, the rest (Discover last), and Recently played.
+    fn home_rows(&self) -> Vec<HomeRowView<'_>> {
+        let built: Vec<HomeRowView<'_>> = self
+            .library
+            .home
+            .rows
+            .iter()
+            .map(|row| HomeRowView {
+                title: &row.title,
+                tracks: &row.tracks,
+            })
+            .collect();
+        let split = built.len().min(2);
+        let mut rows = Vec::with_capacity(built.len() + 2);
+        let mut built = built.into_iter();
+        rows.extend(built.by_ref().take(split));
+        if !self.library.liked.is_empty() {
+            rows.push(HomeRowView {
+                title: "Liked songs",
+                tracks: &self.library.liked,
+            });
         }
-
-        let menu = overlays::open_amount(ctx, "menu", self.overlay == Overlay::Menu);
-        if menu > 0.0 {
-            let data = self.jam_panel_data();
-            // The view borrows the app, so the invite field is edited on
-            // the side and put back afterwards.
-            let mut invite = std::mem::take(&mut self.jam_invite_input);
-            let actions = overlays::show_menu(
-                ctx,
-                window,
-                layout,
-                menu,
-                icons,
-                self.auto_mix,
-                &self.jam_view(&data),
-                &mut invite,
-                r,
-            );
-            self.jam_invite_input = invite;
-            for action in actions {
-                match action {
-                    MenuAction::Close if self.overlay == Overlay::Menu => {
-                        self.overlay = Overlay::None
-                    }
-                    MenuAction::Close => {}
-                    MenuAction::OpenSettings => {
-                        self.settings_page = SettingsPage::General;
-                        self.settings_error = None;
-                        self.overlay = Overlay::Settings;
-                    }
-                    MenuAction::ToggleAutoMix => self.set_auto_mix(!self.auto_mix),
-                    MenuAction::Jam(action) => self.apply_jam_action(action, &data),
-                }
-            }
+        rows.extend(built);
+        if !self.library.recent.is_empty() {
+            rows.push(HomeRowView {
+                title: "Recently played",
+                tracks: &self.library.recent,
+            });
         }
-
-        let queue = overlays::open_amount(ctx, "queue", self.overlay == Overlay::Queue);
-        if queue > 0.0 {
-            let snapshot: Vec<Track> = self.queue.iter().cloned().collect();
-            let now_playing = self.shown_track().cloned();
-            let actions = overlays::show_queue(
-                ctx,
-                window,
-                layout,
-                queue,
-                icons,
-                &QueueView {
-                    now_playing: now_playing.as_ref(),
-                    queue: &snapshot,
-                    mixing: self.automix.busy(),
-                    guest: self.is_guest(),
-                    covers: &self.cover_art,
-                },
-                r,
-            );
-            for action in actions {
-                match action {
-                    QueueAction::Close if self.overlay == Overlay::Queue => {
-                        self.overlay = Overlay::None
-                    }
-                    QueueAction::Close => {}
-                    QueueAction::Play(track) => {
-                        self.queue.remove_id(&track.id);
-                        self.play_queue_track(track);
-                    }
-                    QueueAction::Remove(index) => {
-                        self.queue.remove(index);
-                    }
-                }
-            }
-        }
-
-        let settings = overlays::open_amount(ctx, "settings", self.overlay == Overlay::Settings);
-        if settings > 0.0 {
-            self.render_settings(ctx, window, settings, icons, r);
-        }
+        rows
     }
 }
 
@@ -671,6 +859,8 @@ impl eframe::App for YtMusicApp {
         self.poll_jam();
         self.poll_lastfm();
         self.update_scrobbling();
+        self.tick_library();
+        self.poll_updates(ctx);
         self.request_covers();
         self.handle_finished_track();
         self.poll_mix();
@@ -745,6 +935,10 @@ pub fn run() -> eframe::Result<()> {
             apply_style(&cc.egui_ctx);
             let mut app = YtMusicApp::default();
             app.load_settings();
+            app.load_library();
+            if !app.settings.onboarded && !app.library.taste.has_history() {
+                app.genre_picks = Some(Vec::new());
+            }
             app.jam.start_discovery();
             crate::infrastructure::bundled::update_yt_dlp_in_background(
                 app.tools.yt_dlp.clone(),
@@ -983,14 +1177,34 @@ mod tests {
     }
 
     #[test]
-    fn overlays_toggle_and_replace_each_other() {
-        let mut app = YtMusicApp::default();
-        app.toggle_overlay(Overlay::Menu);
-        assert_eq!(app.overlay, Overlay::Menu);
-        app.toggle_overlay(Overlay::Queue);
-        assert_eq!(app.overlay, Overlay::Queue);
-        app.toggle_overlay(Overlay::Queue);
-        assert_eq!(app.overlay, Overlay::None);
+    fn the_app_starts_on_home_and_searching_switches_to_results() {
+        let mut app = offline_app();
+        assert_eq!(app.view, View::Home);
+        app.search = "hardstyle".into();
+        app.search();
+        assert_eq!(app.view, View::Search);
+        assert_eq!(app.settings.recent_searches, ["hardstyle"]);
+    }
+
+    #[test]
+    fn a_resumed_song_loads_from_where_it_was_left_on_play() {
+        let mut app = offline_app();
+        app.current = Some(track("last", "Last"));
+        app.player.show_paused_at(80.0);
+        app.resume_at = Some(80.0);
+
+        app.seek(95.0);
+        assert_eq!(app.resume_at, Some(95.0));
+        assert!(!app.loading, "seeking doesn't load anything yet");
+
+        app.toggle_pause();
+        assert!(app.loading);
+        assert_eq!(app.resume_at, None);
+        assert_eq!(app.start_at, 95.0);
+        assert_eq!(
+            app.pending_track.as_ref().map(|t| t.id.as_str()),
+            Some("last")
+        );
     }
 
     #[test]

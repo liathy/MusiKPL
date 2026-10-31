@@ -19,7 +19,7 @@ use crate::{
     },
 };
 
-use super::{errors::AppError, YtMusicApp};
+use super::{errors::AppError, library::unix_now, YtMusicApp};
 
 type MixResult = Result<Vec<Track>, String>;
 
@@ -76,6 +76,9 @@ impl YtMusicApp {
     fn request_mix(&mut self, seed: &Track) {
         let sources = mix_sources(seed);
         let mut exclusions = self.mix_exclusions();
+        // Lean toward the user's taste: skipped songs out, favorite
+        // artists up, the Mix's own order otherwise.
+        let preferences = self.library.taste.preferences(unix_now());
         let tools = self.tools.clone();
         let registry = self.registry.clone();
         let (sender, receiver) = mpsc::channel();
@@ -85,6 +88,7 @@ impl YtMusicApp {
             for source in sources {
                 match query_ytdlp(&tools, &source, true, &registry) {
                     Ok(items) => {
+                        let items = preferences.rank(items);
                         let picked = select_mix_items(items, &mut exclusions, MIX_BATCH);
                         if !picked.is_empty() {
                             let _ = sender.send(Ok(picked));
@@ -174,6 +178,8 @@ impl YtMusicApp {
 
     pub(super) fn set_auto_mix(&mut self, enabled: bool) {
         self.auto_mix = enabled;
+        self.settings.auto_mix = enabled;
+        self.library.settings_changed = true;
         if enabled {
             self.automix.failures = 0;
             self.automix.retry_at = None;

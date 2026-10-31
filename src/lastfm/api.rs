@@ -257,6 +257,53 @@ pub(crate) fn album_art(api_key: &str, song: &SongInfo) -> Result<Option<String>
     }
 }
 
+/// The song's Last.fm tags (mostly genres), most used first; the artist's
+/// tags when the song has none. Read-only: needs just an API key.
+pub(crate) fn tags(api_key: &str, song: &SongInfo) -> Result<Vec<String>, String> {
+    let track = get(vec![
+        ("method", "track.getTopTags".into()),
+        ("api_key", api_key.into()),
+        ("artist", song.artist.clone()),
+        ("track", song.title.clone()),
+        ("autocorrect", "1".into()),
+    ]);
+    let tags = match track {
+        Ok(value) => tag_names(&value),
+        Err(ApiError::Api {
+            code: TRACK_NOT_FOUND,
+            ..
+        }) => Vec::new(),
+        Err(error) => return Err(error.describe()),
+    };
+    if !tags.is_empty() || song.artist.is_empty() {
+        return Ok(tags);
+    }
+    match get(vec![
+        ("method", "artist.getTopTags".into()),
+        ("api_key", api_key.into()),
+        ("artist", song.artist.clone()),
+        ("autocorrect", "1".into()),
+    ]) {
+        Ok(value) => Ok(tag_names(&value)),
+        Err(ApiError::Api { .. }) => Ok(Vec::new()),
+        Err(error) => Err(error.describe()),
+    }
+}
+
+/// Tag names from a `getTopTags` reply, in Last.fm's order.
+fn tag_names(value: &Value) -> Vec<String> {
+    value
+        .pointer("/toptags/tag")
+        .and_then(Value::as_array)
+        .map(|tags| {
+            tags.iter()
+                .filter_map(|tag| tag.get("name").and_then(Value::as_str))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// The largest real album image in a `track.getInfo` reply.
 fn pick_album_art(value: &Value) -> Option<String> {
     let images = value.pointer("/track/album/image")?.as_array()?;
@@ -316,6 +363,16 @@ mod tests {
         );
         let value: Value = serde_json::from_str(r#"{"session":{"name":"anna"}}"#).unwrap();
         assert!(parse_session(&value).is_err());
+    }
+
+    #[test]
+    fn tag_names_keep_last_fm_order() {
+        let value: Value = serde_json::from_str(
+            r#"{"toptags":{"tag":[{"name":"hardstyle","count":100},{"name":"edm","count":40}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(tag_names(&value), ["hardstyle", "edm"]);
+        assert!(tag_names(&Value::Null).is_empty());
     }
 
     #[test]

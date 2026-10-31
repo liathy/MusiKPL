@@ -1,5 +1,6 @@
-//! Floating panels: the menu and queue drawers, and the settings modal.
-//! Each slides or fades in over a backdrop that closes it when clicked.
+//! Panels: the menu and queue, docked beside the main area so the app stays
+//! usable while they are open, and the settings modal, which fades in over a
+//! backdrop that closes it when clicked.
 
 use eframe::egui::{
     self, pos2, vec2, Align2, Color32, CursorIcon, Id, Order, Rect, Sense, Shadow, Stroke, Ui,
@@ -12,7 +13,7 @@ use crate::{
         fonts,
         icons::IconTextures,
         jam::{self, JamAction, JamView},
-        layout::{drawer_rect, modal_rect, Side, WindowLayout},
+        layout::{modal_rect, Side},
         responsive::ResponsiveUi,
         widgets::{
             self, caps_label, checkbox_row, elided, hover_amount, icon_button, item_id, mix,
@@ -92,6 +93,46 @@ fn panel<R>(
         .inner
 }
 
+/// A side panel docked in the main area: the rest of the app stays usable
+/// beside it. `rect` may extend past `visible` while it slides in.
+fn docked<R>(
+    ui: &mut Ui,
+    rect: Rect,
+    visible: Rect,
+    side: Side,
+    padding: f32,
+    content: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    let theme = Theme::default();
+    let clip = rect.intersect(visible);
+    let painter = ui.painter_at(clip);
+    painter.rect_filled(rect, 0.0, theme.panel);
+    let edge = match side {
+        Side::Left => [rect.right_top(), rect.right_bottom()],
+        Side::Right => [rect.left_top(), rect.left_bottom()],
+    };
+    painter.line_segment(edge, Stroke::new(1.0_f32, theme.border));
+    ui.allocate_new_ui(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink(padding))
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+        |ui| {
+            ui.set_clip_rect(clip);
+            content(ui)
+        },
+    )
+    .inner
+}
+
+/// Width of the docked menu and queue.
+pub(crate) fn menu_width(r: &ResponsiveUi) -> f32 {
+    r.rem(18.75)
+}
+
+pub(crate) fn queue_width(r: &ResponsiveUi) -> f32 {
+    r.rem(25.0)
+}
+
 /// "Queue"/"Menu" heading with round buttons on the right.
 fn drawer_header(
     ui: &mut Ui,
@@ -136,35 +177,44 @@ pub(crate) enum MenuAction {
     OpenSettings,
     ToggleAutoMix,
     Jam(JamAction),
+    CheckForUpdates,
+    InstallUpdate,
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Where updating MusiKPL stands, for the bottom of the menu.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum UpdateView<'a> {
+    Idle,
+    Checking,
+    UpToDate,
+    Available { version: &'a str },
+    Downloading { percent: u32 },
+    Failed(&'a str),
+}
+
+pub(crate) struct MenuView<'a> {
+    pub(crate) auto_mix: bool,
+    pub(crate) jam: JamView<'a>,
+    pub(crate) update: UpdateView<'a>,
+}
+
+/// The menu, docked on the left of `main`. `open` slides it in.
 pub(crate) fn show_menu(
-    ctx: &egui::Context,
-    window: Rect,
-    layout: &WindowLayout,
+    ui: &mut Ui,
+    main: Rect,
     open: f32,
     icons: &IconTextures,
-    auto_mix: bool,
-    jam_view: &JamView<'_>,
+    view: &MenuView<'_>,
     jam_invite: &mut String,
     r: &ResponsiveUi,
 ) -> Vec<MenuAction> {
-    let theme = Theme::default();
     let mut actions = Vec::new();
-    if backdrop(ctx, "menu", window, 0.0) {
-        actions.push(MenuAction::Close);
-    }
-    let rect = drawer_rect(layout, Side::Left, r.rem(18.75), r);
-    let slide = (rect.right() - window.left()) * (1.0 - open);
-    panel(
-        ctx,
-        "menu",
-        rect.translate(vec2(-slide, 0.0)),
-        open,
-        r.rem(1.25),
-        r,
-        |ui| {
+    let width = menu_width(r);
+    let left = main.left() - width * (1.0 - open);
+    let rect = Rect::from_min_size(pos2(left, main.top()), vec2(width, main.height()));
+    docked(ui, rect, main, Side::Left, r.rem(1.25), |ui| {
+        ui.set_opacity(open);
+        {
             ui.spacing_mut().item_spacing.y = r.rem(1.0);
             match drawer_header(
                 ui,
@@ -179,28 +229,123 @@ pub(crate) fn show_menu(
                 Some(_) => actions.push(MenuAction::Close),
                 None => {}
             }
+            let update_height = r.rem(5.0);
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
+                .max_height((ui.available_height() - update_height).max(0.0))
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = r.rem(1.0);
-                    if checkbox_row(ui, icons, auto_mix, "Auto Mix", r)
-                        .on_hover_text("Keep the queue filled with songs like the one playing")
+                    if checkbox_row(ui, icons, view.auto_mix, "Auto Mix", r)
+                        .on_hover_text(
+                            "Keep the queue filled with songs like the one playing, leaning toward your taste",
+                        )
                         .clicked()
                     {
                         actions.push(MenuAction::ToggleAutoMix);
                     }
-                    let (line, _) =
-                        ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
-                    ui.painter().rect_filled(line, 0.0, theme.border);
+                    divider(ui);
                     actions.extend(
-                        jam::show(ui, jam_view, jam_invite, r)
+                        jam::show(ui, &view.jam, jam_invite, r)
                             .into_iter()
                             .map(MenuAction::Jam),
                     );
                 });
-        },
-    );
+            divider(ui);
+            update_section(ui, &view.update, r, &mut actions);
+        }
+    });
     actions
+}
+
+fn divider(ui: &mut Ui) {
+    let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
+    ui.painter().rect_filled(line, 0.0, Theme::default().border);
+}
+
+/// "Check for updates", or "Install update" once a newer release exists.
+fn update_section(
+    ui: &mut Ui,
+    view: &UpdateView<'_>,
+    r: &ResponsiveUi,
+    actions: &mut Vec<MenuAction>,
+) {
+    let theme = Theme::default();
+    let note = |ui: &mut Ui, text: &str, color: Color32| {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(text)
+                    .font(fonts::body(r.rem(0.8125)))
+                    .color(color),
+            )
+            .wrap(),
+        );
+    };
+    ui.spacing_mut().item_spacing.y = r.rem(0.5);
+    match view {
+        UpdateView::Available { version } => {
+            if pill_button(ui, "Install update", PillKind::Primary, PillSize::Small, r)
+                .on_hover_text("Download it, then MusiKPL restarts. Your data stays.")
+                .clicked()
+            {
+                actions.push(MenuAction::InstallUpdate);
+            }
+            note(
+                ui,
+                &format!("Version {version} is available"),
+                theme.success,
+            );
+        }
+        UpdateView::Downloading { percent } => {
+            ui.horizontal(|ui| {
+                spinner(ui, r.rem(1.0));
+                note(
+                    ui,
+                    &format!("Downloading update… {percent}%"),
+                    theme.secondary_text,
+                );
+            });
+            let (bar, _) =
+                ui.allocate_exact_size(vec2(ui.available_width(), r.rem(0.25)), Sense::hover());
+            ui.painter()
+                .rect_filled(bar, bar.height() / 2.0, theme.surface);
+            let mut done = bar;
+            done.set_width(bar.width() * (*percent as f32 / 100.0).clamp(0.0, 1.0));
+            ui.painter()
+                .rect_filled(done, bar.height() / 2.0, theme.text);
+        }
+        UpdateView::Checking => {
+            ui.horizontal(|ui| {
+                spinner(ui, r.rem(1.0));
+                note(ui, "Checking for updates…", theme.secondary_text);
+            });
+        }
+        other => {
+            if pill_button(
+                ui,
+                "Check for updates",
+                PillKind::Secondary,
+                PillSize::Small,
+                r,
+            )
+            .clicked()
+            {
+                actions.push(MenuAction::CheckForUpdates);
+            }
+            match other {
+                UpdateView::UpToDate => note(
+                    ui,
+                    concat!("You're up to date (v", env!("CARGO_PKG_VERSION"), ")"),
+                    theme.secondary_text,
+                ),
+                UpdateView::Failed(error) => note(ui, error, theme.danger),
+                _ => note(
+                    ui,
+                    concat!("MusiKPL v", env!("CARGO_PKG_VERSION")),
+                    theme.muted_text,
+                ),
+            }
+        }
+    }
 }
 
 // ── Queue ───────────────────────────────────────────────────────────────
@@ -220,10 +365,10 @@ pub(crate) struct QueueView<'a> {
     pub(crate) covers: &'a CoverArt,
 }
 
+/// The queue, docked on the right of `main`. `open` slides it in.
 pub(crate) fn show_queue(
-    ctx: &egui::Context,
-    window: Rect,
-    layout: &WindowLayout,
+    ui: &mut Ui,
+    main: Rect,
     open: f32,
     icons: &IconTextures,
     view: &QueueView<'_>,
@@ -231,19 +376,12 @@ pub(crate) fn show_queue(
 ) -> Vec<QueueAction> {
     let theme = Theme::default();
     let mut actions = Vec::new();
-    if backdrop(ctx, "queue", window, 0.0) {
-        actions.push(QueueAction::Close);
-    }
-    let rect = drawer_rect(layout, Side::Right, r.rem(25.0), r);
-    let slide = (window.right() - rect.left()) * (1.0 - open);
-    panel(
-        ctx,
-        "queue",
-        rect.translate(vec2(slide, 0.0)),
-        open,
-        r.rem(1.25),
-        r,
-        |ui| {
+    let width = queue_width(r);
+    let left = main.right() - width * open;
+    let rect = Rect::from_min_size(pos2(left, main.top()), vec2(width, main.height()));
+    docked(ui, rect, main, Side::Right, r.rem(1.25), |ui| {
+        ui.set_opacity(open);
+        {
             ui.spacing_mut().item_spacing.y = r.rem(0.75);
             if drawer_header(
                 ui,
@@ -314,8 +452,8 @@ pub(crate) fn show_queue(
                         queue_item(ui, track, Some(index), false, view, icons, r, &mut actions);
                     }
                 });
-        },
-    );
+        }
+    });
     actions
 }
 
@@ -458,6 +596,8 @@ pub(crate) enum SettingsAction {
     LastFmCancel,
     LastFmDisconnect,
     OpenUrl(String),
+    ClearHistory,
+    PickGenres,
 }
 
 /// Where the Last.fm connection stands.
@@ -729,7 +869,79 @@ fn general_page(
                 });
             });
         });
+    history_card(ui, r, actions);
     error_line(ui, view.error, r);
+}
+
+/// Listening history, with a two-step Clear so one stray click can't wipe it.
+fn history_card(ui: &mut Ui, r: &ResponsiveUi, actions: &mut Vec<SettingsAction>) {
+    let theme = Theme::default();
+    let confirm_id = Id::new("confirm_clear_history");
+    let confirming = ui.data(|data| data.get_temp::<bool>(confirm_id).unwrap_or(false));
+    egui::Frame::none()
+        .fill(Color32::BLACK)
+        .stroke(Stroke::new(1.0_f32, theme.border))
+        .rounding(r.rem(0.75))
+        .inner_margin(egui::Margin::symmetric(r.rem(1.25), r.rem(1.0)))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = r.rem(0.5);
+                ui.label(
+                    egui::RichText::new("Listening history")
+                        .font(fonts::display(r.rem(1.125)))
+                        .color(theme.text),
+                );
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(
+                            "MusiKPL remembers what you play, skip and like on this PC to build Home and lean Auto Mix toward your taste. It never leaves your computer.",
+                        )
+                        .font(fonts::body(r.rem(0.875)))
+                        .color(theme.secondary_text),
+                    )
+                    .wrap(),
+                );
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = r.rem(0.75);
+                    if confirming {
+                        if pill_button(ui, "Yes, clear it", PillKind::Primary, PillSize::Small, r)
+                            .clicked()
+                        {
+                            actions.push(SettingsAction::ClearHistory);
+                            ui.data_mut(|data| data.insert_temp(confirm_id, false));
+                        }
+                        if pill_button(ui, "Cancel", PillKind::Secondary, PillSize::Small, r)
+                            .clicked()
+                        {
+                            ui.data_mut(|data| data.insert_temp(confirm_id, false));
+                        }
+                    } else if pill_button(
+                        ui,
+                        "Clear history and likes",
+                        PillKind::Secondary,
+                        PillSize::Small,
+                        r,
+                    )
+                    .clicked()
+                    {
+                        ui.data_mut(|data| data.insert_temp(confirm_id, true));
+                    }
+                    if pill_button(
+                        ui,
+                        "Pick favorite genres",
+                        PillKind::Secondary,
+                        PillSize::Small,
+                        r,
+                    )
+                    .on_hover_text("Choose the genres Home starts from")
+                    .clicked()
+                    {
+                        actions.push(SettingsAction::PickGenres);
+                    }
+                });
+            });
+        });
 }
 
 fn lastfm_page(

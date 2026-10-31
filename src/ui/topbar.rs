@@ -7,16 +7,21 @@ use crate::{
     theme::Theme,
     ui::{
         fonts,
-        icons::IconTextures,
+        icons::{paint_icon, IconTextures},
         responsive::ResponsiveUi,
-        widgets::{marquee, mix, paint_icon_button, ButtonColors, HOVER_TIME},
+        widgets::{
+            elided, hover_amount, marquee, mix, paint_icon_button, ButtonColors, HOVER_TIME,
+        },
     },
 };
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum TopBarAction {
     ToggleMenu,
+    Home,
     Search,
+    /// A recent search was picked.
+    SearchFor(String),
     StartDrag,
     Minimize,
     Close,
@@ -26,7 +31,7 @@ pub(crate) fn show(
     ui: &mut Ui,
     bar: Rect,
     search: &mut String,
-    menu_open: bool,
+    state: &TopBarState<'_>,
     icons: &IconTextures,
     r: &ResponsiveUi,
 ) -> Vec<TopBarAction> {
@@ -50,7 +55,7 @@ pub(crate) fn show(
     );
     let menu = button(ui, "top_bar_menu", menu_rect);
     let mut menu_colors = ButtonColors::ghost(&theme);
-    if menu_open {
+    if state.menu_open {
         menu_colors.fill = theme.surface;
     }
     paint_icon_button(
@@ -62,8 +67,36 @@ pub(crate) fn show(
         r.rem(0.625),
         menu_colors,
     );
-    if menu.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+    if menu
+        .on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text("Menu")
+        .clicked()
+    {
         actions.push(TopBarAction::ToggleMenu);
+    }
+
+    // Home, beside the menu.
+    let home_rect = menu_rect.translate(vec2(menu_rect.width() + r.rem(0.5), 0.0));
+    let home = button(ui, "top_bar_home", home_rect);
+    let mut home_colors = ButtonColors::ghost(&theme);
+    if state.home_open {
+        home_colors.fill = theme.surface;
+    }
+    paint_icon_button(
+        ui,
+        home_rect,
+        &home,
+        &icons.home,
+        r.rem2(1.5, 1.5),
+        r.rem(0.625),
+        home_colors,
+    );
+    if home
+        .on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text("Home")
+        .clicked()
+    {
+        actions.push(TopBarAction::Home);
     }
 
     // Window controls, right to left.
@@ -110,7 +143,7 @@ pub(crate) fn show(
 
     // Search fills the space between the menu and the logo, up to 1000 px.
     let space = Rect::from_min_max(
-        pos2(menu_rect.right() + r.rem(1.625), bar.top()),
+        pos2(home_rect.right() + r.rem(1.125), bar.top()),
         pos2(logo_left - r.rem(1.0), bar.bottom()),
     );
     let pill = Rect::from_center_size(
@@ -120,8 +153,103 @@ pub(crate) fn show(
     if search_field(ui, pill, search, &theme, r) {
         actions.push(TopBarAction::Search);
     }
+    if let Some(query) = recent_searches(ui, pill, search, state.recent, icons, &theme, r) {
+        actions.push(TopBarAction::SearchFor(query));
+    }
 
     actions
+}
+
+pub(crate) struct TopBarState<'a> {
+    pub(crate) menu_open: bool,
+    pub(crate) home_open: bool,
+    /// Recent searches, newest first.
+    pub(crate) recent: &'a [String],
+}
+
+/// Recent searches under the search field while it is being typed in,
+/// narrowed to those matching what is typed. Returns the one clicked.
+fn recent_searches(
+    ui: &mut Ui,
+    pill: Rect,
+    search: &str,
+    recent: &[String],
+    icons: &IconTextures,
+    theme: &Theme,
+    r: &ResponsiveUi,
+) -> Option<String> {
+    let field = Id::new("search_field");
+    let popup = Id::new("recent_searches");
+    let focused = ui.memory(|memory| memory.has_focus(field));
+    // Clicking a suggestion takes focus from the field before the click
+    // lands, so the list also stays while the pointer is over it.
+    let last_rect: Option<Rect> = ui.data(|data| data.get_temp(popup));
+    let pointer_inside = last_rect.is_some_and(|rect| ui.rect_contains_pointer(rect));
+    let typed = search.trim().to_lowercase();
+    let matches: Vec<&String> = recent
+        .iter()
+        .filter(|query| typed.is_empty() || query.to_lowercase().contains(&typed))
+        .filter(|query| !query.eq_ignore_ascii_case(search.trim()))
+        .take(8)
+        .collect();
+    if !(focused || pointer_inside) || matches.is_empty() {
+        ui.data_mut(|data| data.remove::<Rect>(popup));
+        return None;
+    }
+    let mut picked = None;
+    let row_height = r.rem(2.5);
+    let area = egui::Area::new(popup)
+        .order(egui::Order::Foreground)
+        .fixed_pos(pos2(pill.left(), pill.bottom() + r.rem(0.375)))
+        .show(ui.ctx(), |ui| {
+            egui::Frame::none()
+                .fill(theme.panel)
+                .stroke(egui::Stroke::new(1.0_f32, theme.border))
+                .rounding(r.rem(0.75))
+                .inner_margin(egui::Margin::same(r.rem(0.375)))
+                .show(ui, |ui| {
+                    ui.set_width(pill.width() - r.rem(0.75));
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    for query in matches {
+                        let (rect, response) = ui.allocate_exact_size(
+                            vec2(ui.available_width(), row_height),
+                            Sense::click(),
+                        );
+                        let hover = hover_amount(ui, &response);
+                        ui.painter().rect_filled(
+                            rect,
+                            r.rem(0.5),
+                            mix(Color32::TRANSPARENT, theme.surface, hover),
+                        );
+                        let icon = Rect::from_center_size(
+                            pos2(rect.left() + r.rem(1.25), rect.center().y),
+                            r.rem2(1.0, 1.0),
+                        );
+                        paint_icon(ui.painter(), &icons.history, icon, theme.secondary_text);
+                        elided(
+                            ui.painter(),
+                            Rect::from_min_max(
+                                pos2(icon.right() + r.rem(0.75), rect.top()),
+                                pos2(rect.right() - r.rem(0.75), rect.bottom()),
+                            ),
+                            query,
+                            fonts::body(r.rem(1.0)),
+                            theme.text,
+                            Align2::LEFT_CENTER,
+                        );
+                        if response.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                            picked = Some(query.clone());
+                        }
+                    }
+                });
+        });
+    let rect = area.response.rect;
+    if picked.is_some() {
+        ui.data_mut(|data| data.remove::<Rect>(popup));
+    } else {
+        ui.data_mut(|data| data.insert_temp(popup, rect));
+    }
+    picked
 }
 
 /// The search pill. Returns true when the user pressed Enter.

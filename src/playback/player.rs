@@ -141,6 +141,14 @@ impl Player {
         self.send(&format!("[\"set_property\",\"speed\",{speed:.3}]"));
     }
 
+    /// Show a song as paused at `position` with nothing loaded, like the
+    /// last session's song at startup.
+    pub(crate) fn show_paused_at(&mut self, position: f64) {
+        self.stop();
+        self.paused = true;
+        self.position = position.max(0.0);
+    }
+
     /// Start a stream at `start_secs`, optionally paused.
     pub(crate) fn play_stream_at(
         &mut self,

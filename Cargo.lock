@@ -2578,6 +2578,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "musikpl-setup"
+version = "2.3.0"
+dependencies = [
+ "eframe",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
 name = "n0-dns-resolver"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

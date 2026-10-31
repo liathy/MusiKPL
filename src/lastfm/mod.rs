@@ -9,6 +9,20 @@ mod scrobble;
 pub(crate) use api::Credentials;
 pub(crate) use scrobble::{ScrobbleStep, ScrobbleTracker};
 
+/// MusiKPL's own read-only Last.fm API key, used for genres and covers when
+/// the user hasn't entered one. It comes from `lastfm-api-key.txt` (ignored
+/// by git) when building; an API key alone can't scrobble or reach
+/// accounts.
+const BUILT_IN_API_KEY: &str = env!("MUSIKPL_LASTFM_KEY");
+
+/// The API key for read-only lookups: the user's own, else MusiKPL's.
+pub(crate) fn lookup_key(user_key: &str) -> Option<String> {
+    [user_key.trim(), BUILT_IN_API_KEY]
+        .into_iter()
+        .find(|key| !key.is_empty())
+        .map(str::to_owned)
+}
+
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -44,6 +58,12 @@ pub(crate) enum LastFmJob {
         video_id: String,
         song: SongInfo,
     },
+    /// The song's genres, for the taste profile.
+    Tags {
+        api_key: String,
+        video_id: String,
+        song: SongInfo,
+    },
 }
 
 #[derive(Debug)]
@@ -51,6 +71,11 @@ pub(crate) enum LastFmEvent {
     AlbumArt {
         video_id: String,
         url: Option<String>,
+    },
+    /// Raw Last.fm tags (possibly none); `None` when the lookup failed.
+    Tags {
+        video_id: String,
+        tags: Option<Vec<String>>,
     },
     /// A scrobble or now-playing update failed.
     Failed(String),
@@ -185,6 +210,15 @@ fn run_jobs(jobs: &Receiver<LastFmJob>, events: &Sender<LastFmEvent>) {
                 let url = api::album_art(&api_key, &song).ok().flatten();
                 thread::sleep(LOOKUP_SPACING);
                 Some(LastFmEvent::AlbumArt { video_id, url })
+            }
+            LastFmJob::Tags {
+                api_key,
+                video_id,
+                song,
+            } => {
+                let tags = api::tags(&api_key, &song).ok();
+                thread::sleep(LOOKUP_SPACING);
+                Some(LastFmEvent::Tags { video_id, tags })
             }
         };
         if let Some(event) = event {

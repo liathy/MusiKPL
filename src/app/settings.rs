@@ -16,7 +16,7 @@ use crate::{
     },
 };
 
-use super::{errors::AppError, Overlay, YtMusicApp};
+use super::{errors::AppError, YtMusicApp};
 
 /// Progress of connecting a Last.fm account in the browser.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,6 +54,7 @@ impl YtMusicApp {
         for event in self.lastfm.poll() {
             match event {
                 LastFmEvent::AlbumArt { video_id, url } => self.cover_art.insert(video_id, url),
+                LastFmEvent::Tags { video_id, tags } => self.receive_tags(&video_id, tags),
                 LastFmEvent::Failed(message) => {
                     let error = AppError::LastFm(message);
                     if self.error.as_ref() != Some(&error) {
@@ -165,11 +166,12 @@ impl YtMusicApp {
 
     fn apply_settings_action(&mut self, action: SettingsAction) {
         match action {
-            SettingsAction::Close => {
-                if self.overlay == Overlay::Settings {
-                    self.overlay = Overlay::None;
-                }
+            SettingsAction::Close => self.settings_open = false,
+            SettingsAction::ClearHistory => {
+                self.clear_taste();
+                self.settings_error = None;
             }
+            SettingsAction::PickGenres => self.pick_genres(),
             SettingsAction::Page(page) => {
                 self.settings_page = page;
                 self.settings_error = None;

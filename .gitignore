@@ -2,6 +2,8 @@
 /dist/
 /mpv.exe
 /yt-dlp.exe
+/lastfm-api-key.txt
+/lastfm-api-secret.txt
 /.idea/
 *.md
 !README.md

@@ -23,6 +23,7 @@ pub(crate) enum FooterAction {
     Seek(f64),
     SetVolume(u8),
     ToggleQueue,
+    ToggleLike,
 }
 
 pub(crate) struct FooterState<'a> {
@@ -37,6 +38,7 @@ pub(crate) struct FooterState<'a> {
     /// Jam guests follow the host and cannot control playback.
     pub(crate) guest: bool,
     pub(crate) queue_open: bool,
+    pub(crate) liked: bool,
 }
 
 pub(crate) fn show(
@@ -53,7 +55,7 @@ pub(crate) fn show(
         egui::Stroke::new(1.0_f32, theme.border),
     );
     let [info, playback, volume] = footer_columns(footer);
-    track_info(ui, info, icons, state, &theme, r);
+    track_info(ui, info, icons, state, &theme, r, &mut actions);
     controls(ui, playback, icons, state, &theme, r, &mut actions);
     volume_and_queue(ui, volume, icons, state, &theme, r, &mut actions);
     actions
@@ -66,6 +68,7 @@ fn track_info(
     state: &FooterState<'_>,
     theme: &Theme,
     r: &ResponsiveUi,
+    actions: &mut Vec<FooterAction>,
 ) {
     let content = column.shrink2(vec2(r.rem(1.5), 0.0));
     let cover_size = r.rem(3.875);
@@ -75,13 +78,53 @@ fn track_info(
     );
     widgets::cover(ui, cover_rect, state.cover.as_ref(), icons, r.rem(0.5));
 
+    // ♥ Like, at the right of the column.
+    let heart_size = r.rem(2.25);
+    let heart_rect = Rect::from_center_size(
+        pos2(content.right() - heart_size / 2.0, content.center().y),
+        egui::Vec2::splat(heart_size),
+    );
+    let text_right = if state.track.is_some() {
+        let heart = ui.interact(heart_rect, Id::new("footer_like"), Sense::click());
+        let mut colors = ButtonColors::ghost(theme);
+        if state.liked {
+            colors.icon = theme.like;
+            colors.hover_icon = theme.like;
+        } else {
+            colors.hover_icon = theme.like;
+        }
+        paint_icon_button(
+            ui,
+            heart_rect,
+            &heart,
+            if state.liked {
+                &icons.heart_filled
+            } else {
+                &icons.heart
+            },
+            r.rem2(1.25, 1.25),
+            heart_size / 2.0,
+            colors,
+        );
+        if heart
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_text(if state.liked { "Unlike" } else { "Like" })
+            .clicked()
+        {
+            actions.push(FooterAction::ToggleLike);
+        }
+        heart_rect.left() - r.rem(0.5)
+    } else {
+        content.right()
+    };
+
     let text_left = cover_rect.right() + r.rem(0.625);
     let title_height = r.rem(2.3125);
     let subtitle_height = r.rem(1.375);
     let top = content.center().y - (title_height + subtitle_height) / 2.0;
     let title_rect = Rect::from_min_max(
         pos2(text_left, top),
-        pos2(content.right(), top + title_height),
+        pos2(text_right.max(text_left), top + title_height),
     );
     let subtitle_rect = Rect::from_min_size(
         pos2(text_left, title_rect.bottom()),

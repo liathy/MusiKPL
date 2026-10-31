@@ -34,6 +34,11 @@ icon_files! {
     added => "added.svg",
     check_box => "check_box.svg",
     check_box_off => "check_box_off.svg",
+    home => "home.svg",
+    heart => "heart.svg",
+    heart_filled => "heart_filled.svg",
+    refresh => "refresh.svg",
+    history => "history.svg",
 }
 
 fn load(ctx: &egui::Context, name: &str, bytes: &[u8]) -> Result<TextureHandle, String> {

@@ -64,19 +64,6 @@ pub(crate) enum Side {
     Right,
 }
 
-/// A floating drawer between the top bar and the footer.
-pub(crate) fn drawer_rect(layout: &WindowLayout, side: Side, width: f32, r: &ResponsiveUi) -> Rect {
-    let margin = r.rem(0.75);
-    let inset = r.rem(1.0);
-    let top = layout.main.top() + margin;
-    let bottom = (layout.main.bottom() - margin).max(top);
-    let left = match side {
-        Side::Left => layout.main.left() + inset,
-        Side::Right => layout.main.right() - inset - width,
-    };
-    Rect::from_min_max(pos2(left, top), pos2(left + width, bottom))
-}
-
 /// The settings modal: the whole window less a 2.5 rem margin.
 pub(crate) fn modal_rect(window: Rect, r: &ResponsiveUi) -> Rect {
     window.shrink(r.rem(2.5))
@@ -144,16 +131,8 @@ mod tests {
     }
 
     #[test]
-    fn drawers_float_inside_the_main_area() {
+    fn the_settings_modal_keeps_a_margin() {
         let (window, r) = design();
-        let layout = window_layout(window, &r);
-        let menu = drawer_rect(&layout, Side::Left, r.rem(18.75), &r);
-        let queue = drawer_rect(&layout, Side::Right, r.rem(25.0), &r);
-        assert_eq!(menu.min, pos2(16.0, 72.0));
-        assert_eq!(menu.height(), 770.0);
-        assert_eq!(queue.right(), 1424.0);
-        assert_eq!(queue.width(), 400.0);
-        assert!(layout.main.contains_rect(menu) && layout.main.contains_rect(queue));
         assert_eq!(modal_rect(window, &r).min, pos2(40.0, 40.0));
     }
 }

@@ -1,6 +1,6 @@
 use crate::ui::footer::FooterAction;
 
-use super::{Overlay, YtMusicApp};
+use super::YtMusicApp;
 
 /// Translate presentation-layer footer events into application operations.
 pub(super) fn apply_footer_action(app: &mut YtMusicApp, action: FooterAction) {
@@ -9,18 +9,15 @@ pub(super) fn apply_footer_action(app: &mut YtMusicApp, action: FooterAction) {
         // Jam guests follow the host; their footer cannot drive playback.
         FooterAction::TogglePause if app.is_guest() => {}
         FooterAction::Seek(_) if app.is_guest() => {}
-        FooterAction::TogglePause => {
-            // Pressing play while waiting for guests starts right away.
-            app.jam_hold = None;
-            app.player.set_paused(!app.player.paused);
-        }
+        FooterAction::TogglePause => app.toggle_pause(),
         FooterAction::Next => app.next(),
-        FooterAction::Seek(position) => app.player.seek(position),
-        FooterAction::SetVolume(volume) => {
-            app.player.volume = volume;
-            app.player
-                .send(&format!("[\"set_property\",\"volume\",{}]", volume));
+        FooterAction::Seek(position) => app.seek(position),
+        FooterAction::SetVolume(volume) => app.set_volume(volume),
+        FooterAction::ToggleQueue => app.queue_open = !app.queue_open,
+        FooterAction::ToggleLike => {
+            if let Some(track) = app.shown_track().cloned() {
+                app.toggle_like(&track);
+            }
         }
-        FooterAction::ToggleQueue => app.toggle_overlay(Overlay::Queue),
     }
 }

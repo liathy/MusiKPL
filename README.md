@@ -12,17 +12,22 @@ MusiKPL brings music discovery, queue management, automatic mixes, synchronized 
 
 ## ✨ Features
 
-- **YouTube Music Search** — Search for songs, artists, or albums, or paste a YouTube link. Results appear as a grid of cover cards.
+- **Home** — MusiKPL opens on Home: rows of songs picked from what you listen to most ("Because you like …"), your Liked songs, a Discover row of artists you haven't heard yet, and Recently played. On first run you pick a few favorite genres (from pop and rock to hardstyle, hardcore, frenchcore, hardtekk, phonk, Russian rap and more). Home refreshes in the background every 6 hours, or with its Refresh button.
+- **Your Taste, Kept Locally** — MusiKPL learns from how long you listen, what you finish, what you skip, and what you ♥ like, and looks up each song's genres on Last.fm. It all stays on your PC, in `%APPDATA%\MusiKPL`. Clear it any time in Settings.
+- **YouTube Music Search** — Search for songs, artists, or albums, or paste a YouTube link. Results appear as a grid of cover cards, and the search box remembers your recent searches.
 - **Audio Streaming** — Best-quality audio resolved with `yt-dlp` and played with `mpv`.
 - **Playback Controls** — Play, pause, skip tracks, seek through songs, and adjust volume.
 - **Cover Art** — YouTube thumbnails, or square album art from Last.fm when it knows the song.
-- **Queue Management** — A queue drawer to see what's playing and up next, play any song, or remove it.
-- **Auto Mix** — Keeps the queue filled with songs like the one playing. It refills in the background before the queue runs out, falls back to the artist's songs when YouTube has no Mix, retries when a search fails, and skips songs you've already heard. Songs you add with **+** play first and are kept when you start a new mix.
+- **Like Songs** — Press ♥ on any song card or in the player bar.
+- **Docked Menu and Queue** — The menu (left) and queue (right) open beside the music instead of over it, so you can keep browsing and playing with them open.
+- **Picks Up Where You Left Off** — Your volume, Auto Mix choice, queue, and last song are remembered. The last song waits, paused, where you stopped; nothing loads until you press play.
+- **Auto Mix** — Keeps the queue filled with songs like the one playing, leaning toward your taste: songs you keep skipping are left out and your favorite artists move up. It refills in the background before the queue runs out, falls back to the artist's songs when YouTube has no Mix, retries when a search fails, and skips songs you've already heard. Songs you add with **+** play first and are kept when you start a new mix.
 - **LAN Jam** — Listen together over your local network with synchronized playback; join nearby Jams with one click. Works on PCs with VPN or virtual network adapters too.
 - **Internet Jam** — Invite friends anywhere with a copy-paste invite: no account, no port forwarding. Connections are end-to-end encrypted, and only people with the invite can join.
 - **Host & Guest Permissions** — Hosts control playback while guests can request music for the queue.
 - **Last.fm Scrobbling** — Now playing and scrobbles, following Last.fm's rules.
 - **Start with Windows** — Optional, from Settings.
+- **Updates Built In** — Open the menu and press **Check for updates** at the bottom. When a new release is out, **Install update** downloads it, restarts MusiKPL on the new version, and keeps all your data.
 - **Minimalist Interface** — A black design with the Baloo Thambi typefaces, smooth hover animations, and scrolling titles for long names.
 - **Native Desktop Experience** — Built in Rust with `egui` / `eframe`, with its own title bar: drag the top bar to move the window, and use its minimize and close buttons.
 
@@ -38,7 +43,12 @@ MusiKPL brings music discovery, queue management, automatic mixes, synchronized 
 
 ### Download
 
-Download `MusiKPL.exe` from the latest [**GitHub Release**](https://github.com/liathy/MusiKPL/releases) and run it. No installer or extra files are needed.
+From the latest [**GitHub Release**](https://github.com/liathy/MusiKPL/releases), download either:
+
+- **`MusiKPL-Setup.exe`** (recommended) — installs MusiKPL for your Windows account only, with no administrator rights, into `%LOCALAPPDATA%\Programs\MusiKPL`. You choose whether to add Start menu and Desktop shortcuts. It appears in **Settings → Apps → Installed apps**, where you can uninstall it; the uninstaller asks whether to delete your data too (it keeps it unless you tick the box).
+- **`MusiKPL.exe`** — the portable app: run it from anywhere, no install.
+
+Both update themselves from the menu's **Check for updates**. Your data is never touched by installing, updating, or reinstalling.
 
 ### Requirements
 
@@ -49,7 +59,16 @@ Download `MusiKPL.exe` from the latest [**GitHub Release**](https://github.com/l
 
 ### Settings
 
-Settings are saved in `%APPDATA%\MusiKPL\settings.json`.
+Everything MusiKPL remembers is in `%APPDATA%\MusiKPL`, as small JSON files:
+
+| File | What it holds |
+| --- | --- |
+| `settings.json` | Settings, volume, Auto Mix, recent searches, favorite genres, Last.fm connection |
+| `taste.json` | Listening history and likes (up to 1,500 songs; liked songs are always kept) |
+| `session.json` | The last song, where you stopped, and the queue |
+| `home.json` | The latest Home, so it opens instantly |
+
+Genres and album art come from Last.fm using MusiKPL's built-in read-only key, so they work without an account. Entering your own API key in Settings uses yours instead.
 
 To scrobble to Last.fm:
 
@@ -64,6 +83,8 @@ To scrobble to Last.fm:
 - `yt-dlp` runs only for a few seconds per search or song lookup, and `mpv` only while music plays.
 - Nothing is drawn while the window is minimized; playback, Jams, and scrobbling keep running.
 - Internet Jam networking starts only while an internet Jam is active and stops when it ends.
+- Home is built by one `yt-dlp` search at a time, at most every 6 hours, and opens instantly from its saved copy. Covers load only for cards scrolled into view.
+- Your data is saved in the background, at most every 10 seconds and when the app closes.
 
 ## 🛠️ Built With
 
@@ -102,6 +123,14 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 The script installs Rust if needed, downloads the latest official `yt-dlp` and a current 64-bit Windows `mpv` build into the project root, builds the release, and puts the single `MusiKPL.exe` in `dist`. Omit `-Build` to only install the dependencies.
 
+To build both release files (`MusiKPL.exe` and `MusiKPL-Setup.exe`) into `dist`:
+
+```powershell
+.\scripts\build-release.ps1
+```
+
+Put MusiKPL's Last.fm API key in `lastfm-api-key.txt` in the project root first (ignored by git), or set `MUSIKPL_LASTFM_KEY`. It is built into the app for genres and covers. Builds without it still work; users then need their own key for those.
+
 ### Run in development
 
 ```bash
@@ -125,10 +154,12 @@ target/release/MusiKPL.exe
 ### Check the code
 
 ```bash
-cargo fmt -- --check
-cargo clippy --all-targets
-cargo test
+cargo fmt --all -- --check
+cargo clippy --all-targets --workspace
+cargo test --workspace
 ```
+
+The setup lives in `installer/` (a workspace member). It embeds `target/release/MusiKPL.exe`, so build MusiKPL first.
 
 ## 🎧 Jam
 
@@ -160,7 +191,9 @@ Potential areas for future development include:
 - [ ] Further improve LAN session discovery and connection reliability.
 - [ ] Refine playback synchronization across devices.
 - [ ] Optionally run a dedicated relay server for internet Jams.
-- [ ] Expand music discovery and automatic mix recommendations.
+- [x] Home with recommendations from your listening, and taste-aware Auto Mix.
+- [x] Installer and built-in updates.
+- [ ] Expand music discovery further (more Home rows, mood and time-of-day mixes).
 - [ ] Add screenshots to this README.
 
 ## 🤝 Contributing
