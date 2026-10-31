@@ -81,6 +81,8 @@ struct YtMusicApp {
     /// Adding the Windows Firewall rule for Jams, waiting on the user's
     /// approval in the Windows prompt.
     firewall_rx: Option<Receiver<Result<(), String>>>,
+    /// The invite being pasted to join a Jam over the internet.
+    jam_invite_input: String,
     overlay: Overlay,
     settings_page: SettingsPage,
     settings: Settings,
@@ -142,6 +144,7 @@ impl Default for YtMusicApp {
             pending_track: None,
             jam_hold: None,
             firewall_rx: None,
+            jam_invite_input: String::new(),
             overlay: Overlay::None,
             settings_page: SettingsPage::General,
             settings: Settings::default(),
@@ -577,6 +580,9 @@ impl YtMusicApp {
         let menu = overlays::open_amount(ctx, "menu", self.overlay == Overlay::Menu);
         if menu > 0.0 {
             let data = self.jam_panel_data();
+            // The view borrows the app, so the invite field is edited on
+            // the side and put back afterwards.
+            let mut invite = std::mem::take(&mut self.jam_invite_input);
             let actions = overlays::show_menu(
                 ctx,
                 window,
@@ -585,8 +591,10 @@ impl YtMusicApp {
                 icons,
                 self.auto_mix,
                 &self.jam_view(&data),
+                &mut invite,
                 r,
             );
+            self.jam_invite_input = invite;
             for action in actions {
                 match action {
                     MenuAction::Close if self.overlay == Overlay::Menu => {

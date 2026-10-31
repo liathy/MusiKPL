@@ -19,6 +19,12 @@ serde_json = "1"
 # Last.fm API calls (blocking, on worker threads) and their request signatures.
 ureq = "2"
 md5 = "0.7"
+# Internet Jams: encrypted peer-to-peer connections dialed by public key,
+# with relay fallback. The async runtime starts only for internet Jams.
+iroh = "1.4"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros"] }
+# Invite codes (already in the dependency tree through ureq).
+base64 = "0.22"
 raw-window-handle = "0.6"
 windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_UI_Shell"] }
 # Unpacks the mpv and yt-dlp bundled into release builds (already used by

@@ -7,9 +7,11 @@ use crate::{
     domain::Track,
     jam::{
         self, DiscoveryStatus, DriftAction, JamEvent, LoadStatus, NearbyJam, PlaybackSnapshot,
-        PlaybackState, Role, SyncReason, TrackRef,
+        PlaybackState, Progress, Role, SyncReason, TrackRef,
     },
-    ui::jam::{self as jam_ui, DiscoveryView, JamAction, JamView, NearbyView, RequestView},
+    ui::jam::{
+        self as jam_ui, DiscoveryView, InternetView, JamAction, JamView, NearbyView, RequestView,
+    },
 };
 
 use super::{errors::AppError, YtMusicApp};
@@ -486,6 +488,7 @@ impl YtMusicApp {
             })
             .collect();
         JamPanelData {
+            internet: self.jam.internet_status(),
             nearby_jams,
             nearby,
             discovery,
@@ -512,6 +515,12 @@ impl YtMusicApp {
             undiscoverable: hosting && !info.discoverable,
             waiting_for_guests: hosting && self.jam_hold.is_some(),
             firewall_pending: self.firewall_rx.is_some(),
+            internet: match &data.internet {
+                None => InternetView::Off,
+                Some(Progress::Preparing) => InternetView::Preparing,
+                Some(Progress::Ready(invite)) => InternetView::Ready(invite),
+                Some(Progress::Failed(reason)) => InternetView::Failed(reason),
+            },
             discovery: &data.discovery,
             nearby: &data.nearby,
             requests: &data.requests,
@@ -553,6 +562,15 @@ impl YtMusicApp {
             }
             JamAction::RejectRequest(id) => self.jam.reject_request(id),
             JamAction::AllowFirewall => self.allow_through_firewall(),
+            JamAction::ShareOverInternet => self.jam.share_over_internet(),
+            JamAction::JoinInvite => match self.jam.join_invite(&self.jam_invite_input) {
+                Ok(()) => {
+                    self.jam_invite_input.clear();
+                    self.jam_notice = None;
+                    self.error = None;
+                }
+                Err(error) => self.set_jam_notice(error),
+            },
             JamAction::RemoveRequest(id) => {
                 if let Some(track) = self.jam.remove_request(id) {
                     self.queue.remove_id(&track.video_id);
@@ -564,6 +582,7 @@ impl YtMusicApp {
 
 /// Owned data behind one frame of the Jam section.
 pub(super) struct JamPanelData {
+    internet: Option<Progress<String>>,
     nearby_jams: Vec<NearbyJam>,
     nearby: Vec<NearbyView>,
     discovery: DiscoveryView,

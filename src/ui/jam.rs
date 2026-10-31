@@ -10,8 +10,8 @@ use crate::{
         fonts,
         responsive::ResponsiveUi,
         widgets::{
-            elided, hover_amount, item_id, mix, pill_button, pointer_amount, spinner, PillKind,
-            PillSize,
+            elided, hover_amount, item_id, mix, pill_button, pointer_amount, spinner, text_field,
+            FieldOptions, PillKind, PillSize,
         },
     },
 };
@@ -34,6 +34,18 @@ pub(crate) enum JamAction {
     RemoveRequest(u64),
     /// Add the Windows Firewall rule Jams need on this PC.
     AllowFirewall,
+    /// Host: create an invite for people outside this network.
+    ShareOverInternet,
+    /// Join the Jam in the pasted invite.
+    JoinInvite,
+}
+
+/// Host: the state of the internet invite.
+pub(crate) enum InternetView<'a> {
+    Off,
+    Preparing,
+    Ready(&'a str),
+    Failed(&'a str),
 }
 
 /// A Jam found on the local network.
@@ -74,12 +86,20 @@ pub(crate) struct JamView<'a> {
     pub(crate) waiting_for_guests: bool,
     /// The firewall change is waiting for Windows' approval.
     pub(crate) firewall_pending: bool,
+    /// Host: sharing over the internet.
+    pub(crate) internet: InternetView<'a>,
     pub(crate) discovery: &'a DiscoveryView,
     pub(crate) nearby: &'a [NearbyView],
     pub(crate) requests: &'a [RequestView],
 }
 
-pub(crate) fn show(ui: &mut Ui, view: &JamView<'_>, r: &ResponsiveUi) -> Vec<JamAction> {
+/// `invite_input` is the invite being pasted to join over the internet.
+pub(crate) fn show(
+    ui: &mut Ui,
+    view: &JamView<'_>,
+    invite_input: &mut String,
+    r: &ResponsiveUi,
+) -> Vec<JamAction> {
     let theme = Theme::default();
     let mut actions = Vec::new();
     ui.spacing_mut().item_spacing.y = r.rem(0.5);
@@ -87,7 +107,10 @@ pub(crate) fn show(ui: &mut Ui, view: &JamView<'_>, r: &ResponsiveUi) -> Vec<Jam
         hint(ui, notice, theme.warning, r);
     }
     match view.state {
-        JamPanelState::Inactive => show_inactive(ui, view, r, &mut actions),
+        JamPanelState::Inactive => {
+            show_inactive(ui, view, r, &mut actions);
+            join_by_invite(ui, invite_input, r, &mut actions);
+        }
         JamPanelState::Connecting => show_connecting(ui, view, r, &mut actions),
         JamPanelState::Hosting { listeners } => show_hosting(ui, view, listeners, r, &mut actions),
         JamPanelState::Joined => show_joined(ui, view, r, &mut actions),
@@ -173,6 +196,115 @@ fn show_inactive(ui: &mut Ui, view: &JamView<'_>, r: &ResponsiveUi, actions: &mu
                 r,
                 actions,
             );
+        }
+    }
+}
+
+/// Paste an invite from a friend's MusiKPL to join over the internet.
+fn join_by_invite(
+    ui: &mut Ui,
+    invite_input: &mut String,
+    r: &ResponsiveUi,
+    actions: &mut Vec<JamAction>,
+) {
+    let theme = Theme::default();
+    ui.add_space(r.rem(0.25));
+    section_label(ui, "Join over the internet", r);
+    hint(
+        ui,
+        "Paste the invite a friend sent you from their MusiKPL.",
+        theme.secondary_text,
+        r,
+    );
+    let field = text_field(
+        ui,
+        invite_input,
+        ui.available_width(),
+        FieldOptions {
+            id: "jam_invite",
+            hint: "musikpl:…",
+            password: false,
+            enabled: true,
+        },
+        r,
+    );
+    let entered = field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+    let ready = !invite_input.trim().is_empty();
+    let join = pill_button(ui, "Join", PillKind::Primary, PillSize::Small, r);
+    if ready && (join.clicked() || entered) {
+        actions.push(JamAction::JoinInvite);
+    }
+}
+
+/// Host: create and copy an invite for people outside this network.
+fn internet_invite(
+    ui: &mut Ui,
+    view: &JamView<'_>,
+    r: &ResponsiveUi,
+    actions: &mut Vec<JamAction>,
+) {
+    let theme = Theme::default();
+    ui.add_space(r.rem(0.25));
+    section_label(ui, "Invite over the internet", r);
+    match view.internet {
+        InternetView::Off => {
+            hint(
+                ui,
+                "Let friends outside your network join with an invite.",
+                theme.secondary_text,
+                r,
+            );
+            if pill_button(ui, "Create invite", PillKind::Secondary, PillSize::Small, r).clicked() {
+                actions.push(JamAction::ShareOverInternet);
+            }
+        }
+        InternetView::Preparing => {
+            ui.horizontal(|ui| {
+                spinner(ui, r.rem(1.0));
+                hint(ui, "Creating invite…", theme.secondary_text, r);
+            });
+        }
+        InternetView::Ready(invite) => {
+            hint(
+                ui,
+                "Send this to friends. It works until you end the Jam; anyone with it can join.",
+                theme.secondary_text,
+                r,
+            );
+            let (rect, _) =
+                ui.allocate_exact_size(vec2(ui.available_width(), r.rem(2.25)), Sense::hover());
+            ui.painter().rect(
+                rect,
+                r.rem(0.5),
+                Color32::BLACK,
+                Stroke::new(1.0_f32, theme.border),
+            );
+            elided(
+                ui.painter(),
+                rect.shrink2(r.rem2(0.75, 0.0)),
+                invite,
+                fonts::body(r.rem(0.8125)),
+                theme.secondary_text,
+                Align2::LEFT_CENTER,
+            );
+            let copied_id = egui::Id::new("jam_invite_copied");
+            let now = ui.input(|input| input.time);
+            let copied_at = ui.data(|data| data.get_temp::<f64>(copied_id));
+            let recently = copied_at.is_some_and(|at| now - at < 2.0);
+            let label = if recently { "Copied!" } else { "Copy invite" };
+            if pill_button(ui, label, PillKind::Primary, PillSize::Small, r).clicked() {
+                ui.ctx().copy_text(invite.to_owned());
+                ui.data_mut(|data| data.insert_temp(copied_id, now));
+            }
+            if recently {
+                crate::ui::widgets::repaint_after(ui.ctx(), std::time::Duration::from_millis(500));
+            }
+        }
+        InternetView::Failed(reason) => {
+            hint(ui, reason, theme.warning, r);
+            if pill_button(ui, "Try again", PillKind::Secondary, PillSize::Small, r).clicked() {
+                actions.push(JamAction::ShareOverInternet);
+            }
         }
     }
 }
@@ -386,6 +518,7 @@ fn show_hosting(
             actions,
         );
     }
+    internet_invite(ui, view, r, actions);
     requests(ui, view, true, r, actions);
     if pill_button(ui, "End Jam", PillKind::Secondary, PillSize::Small, r).clicked() {
         actions.push(JamAction::End);
@@ -537,7 +670,7 @@ mod tests {
         let output = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.set_width(r.rem(16.25));
-                show(ui, view, &r);
+                show(ui, view, &mut String::new(), &r);
             });
         });
         let mut texts = Vec::new();
@@ -570,6 +703,7 @@ mod tests {
             undiscoverable: false,
             waiting_for_guests: false,
             firewall_pending: false,
+            internet: InternetView::Off,
             discovery,
             nearby,
             requests,
@@ -636,6 +770,25 @@ mod tests {
             &[],
         ));
         assert!(texts.iter().any(|text| text == "Allow through firewall"));
+        // Hosts can invite people outside the network...
+        assert!(texts.iter().any(|text| text == "Create invite"));
+        let mut ready = view(
+            JamPanelState::Hosting { listeners: 1 },
+            &DiscoveryView::Ready,
+            &[],
+            &[],
+        );
+        ready.internet = InternetView::Ready("musikpl:abc");
+        let texts = run_panel(&ready);
+        assert!(texts.iter().any(|text| text == "Copy invite"));
+        // ...and anyone not in a Jam can join with one.
+        let texts = run_panel(&view(
+            JamPanelState::Inactive,
+            &DiscoveryView::Ready,
+            &[],
+            &[],
+        ));
+        assert!(texts.iter().any(|text| text == "Join over the internet"));
 
         let blocked = DiscoveryView::Unavailable("Discovery is blocked.".into());
         let texts = run_panel(&view(JamPanelState::Inactive, &blocked, &[], &[]));

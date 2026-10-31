@@ -147,6 +147,7 @@ pub(crate) fn show_menu(
     icons: &IconTextures,
     auto_mix: bool,
     jam_view: &JamView<'_>,
+    jam_invite: &mut String,
     r: &ResponsiveUi,
 ) -> Vec<MenuAction> {
     let theme = Theme::default();
@@ -191,7 +192,11 @@ pub(crate) fn show_menu(
                     let (line, _) =
                         ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
                     ui.painter().rect_filled(line, 0.0, theme.border);
-                    actions.extend(jam::show(ui, jam_view, r).into_iter().map(MenuAction::Jam));
+                    actions.extend(
+                        jam::show(ui, jam_view, jam_invite, r)
+                            .into_iter()
+                            .map(MenuAction::Jam),
+                    );
                 });
         },
     );

@@ -19,11 +19,15 @@ use std::{
 };
 
 mod discovery;
+mod internet;
 mod protocol;
 mod requests;
 
 pub(crate) use discovery::{DiscoveryStatus, NearbyJam};
+pub(crate) use internet::Progress;
 pub(crate) use protocol::*;
+
+use internet::{Invite, Share, Tunnel};
 
 use discovery::{Discovery, DISCOVERY_PORT};
 use requests::RequestQueue;
@@ -70,6 +74,12 @@ pub(crate) struct JamController {
     guest_loads: HashMap<u64, (String, LoadStatus)>,
     participant_id: Option<u64>,
     discovery: Option<Discovery>,
+    /// Host: the port this device's Jam listens on.
+    host_port: Option<u16>,
+    /// Host: the Jam shared over the internet, once the host asked to.
+    internet: Option<Share>,
+    /// Guest: the internet connection to a host, while joining by invite.
+    tunnel: Option<Tunnel>,
 }
 
 /// Controller and guest-connection messages to the host hub.
@@ -157,6 +167,9 @@ impl Default for JamController {
             guest_loads: HashMap::new(),
             participant_id: None,
             discovery: None,
+            host_port: None,
+            internet: None,
+            tunnel: None,
         }
     }
 }
@@ -246,8 +259,65 @@ impl JamController {
             discoverable,
             ..JamInfo::default()
         };
+        self.host_port = Some(port);
         self.set_browsing(false);
         Ok(())
+    }
+
+    /// Host: also let people outside this network join, by invite.
+    pub(crate) fn share_over_internet(&mut self) {
+        let (Some(Role::Host), Some(port)) = (self.info.role, self.host_port) else {
+            return;
+        };
+        // A failed share can be retried; a working one is kept.
+        if matches!(self.internet_status(), Some(Progress::Failed(_)) | None) {
+            self.internet = Some(Share::start(
+                SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+                self.info.token.clone(),
+                self.info.host_name.clone(),
+            ));
+        }
+    }
+
+    /// Host: the internet invite, while sharing.
+    pub(crate) fn internet_status(&self) -> Option<Progress<String>> {
+        self.internet.as_ref().map(Share::status)
+    }
+
+    /// Join a Jam over the internet with an invite the host sent.
+    pub(crate) fn join_invite(&mut self, text: &str) -> Result<(), String> {
+        let invite = Invite::decode(text)?;
+        self.leave();
+        self.info = JamInfo {
+            role: Some(Role::Guest),
+            status: "Connecting over the internet…".into(),
+            connecting: true,
+            host_name: invite.host_name.clone(),
+            ..JamInfo::default()
+        };
+        self.tunnel = Some(Tunnel::start(invite));
+        self.set_browsing(false);
+        Ok(())
+    }
+
+    /// Guest: start the Jam connection once the internet tunnel is up.
+    fn poll_tunnel(&mut self) -> Option<JamEvent> {
+        if self.guest.is_some() {
+            return None;
+        }
+        let tunnel = self.tunnel.as_ref()?;
+        match tunnel.status() {
+            Progress::Preparing => None,
+            Progress::Ready(local) => {
+                let (token, host_name) = (tunnel.token.clone(), tunnel.host_name.clone());
+                self.start_guest(local, token, host_name);
+                None
+            }
+            Progress::Failed(reason) => {
+                self.close(Some(reason));
+                Some(JamEvent::SessionClosed)
+            }
+        }
     }
 
     /// Join a Jam found by discovery; its address and code come from the
@@ -258,6 +328,12 @@ impl JamController {
 
     fn connect(&mut self, address: SocketAddr, token: String, host_name: String) {
         self.leave();
+        self.start_guest(address, token, host_name);
+    }
+
+    /// Run a guest session against `address`, keeping any internet tunnel
+    /// that leads there.
+    fn start_guest(&mut self, address: SocketAddr, token: String, host_name: String) {
         let origin = Instant::now();
         let (wire_tx, wire_rx) = mpsc::channel();
         let (command_tx, command_rx) = mpsc::channel();
@@ -269,9 +345,14 @@ impl JamController {
         self.wire = wire_rx;
         self.guest = Some(command_tx);
         self.clock_origin = Some(origin);
+        let status = if self.tunnel.is_some() {
+            "Connected over the internet. Joining…"
+        } else {
+            "Connecting…"
+        };
         self.info = JamInfo {
             role: Some(Role::Guest),
-            status: "Connecting…".into(),
+            status: status.into(),
             connecting: true,
             host_name,
             ..JamInfo::default()
@@ -307,6 +388,10 @@ impl JamController {
         self.guest_requests.clear();
         self.guest_loads.clear();
         self.participant_id = None;
+        // Ending the Jam also ends its internet invite or connection.
+        self.host_port = None;
+        self.internet = None;
+        self.tunnel = None;
         self.set_browsing(true);
     }
 
@@ -318,7 +403,7 @@ impl JamController {
 
     /// Apply everything the worker threads reported since the last frame.
     pub(crate) fn poll(&mut self) -> Vec<JamEvent> {
-        let mut events = Vec::new();
+        let mut events: Vec<JamEvent> = self.poll_tunnel().into_iter().collect();
         let mut requests_changed = false;
         while let Ok(wire) = self.wire.try_recv() {
             match wire {
