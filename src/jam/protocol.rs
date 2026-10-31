@@ -155,6 +155,9 @@ pub(crate) enum JamEvent {
 #[derive(Clone, Debug)]
 pub(crate) struct JamInfo {
     pub(crate) role: Option<Role>,
+    /// Host: the session code. Guests receive it through discovery, so the
+    /// interface no longer shows it; tests use it to join directly.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) token: String,
     pub(crate) status: String,
     pub(crate) peers: usize,
@@ -162,7 +165,9 @@ pub(crate) struct JamInfo {
     pub(crate) connecting: bool,
     /// Guest: the host's name. Host: this device's name.
     pub(crate) host_name: String,
-    /// Host: `ip:port` for joining by code when discovery is unavailable.
+    /// Host: the `ip:port` the Jam listens on (useful when diagnosing
+    /// discovery; tests connect to it directly).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) address: String,
     /// Host: whether nearby devices can find this Jam automatically.
     pub(crate) discoverable: bool,

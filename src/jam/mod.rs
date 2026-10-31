@@ -29,7 +29,7 @@ use discovery::{Discovery, DISCOVERY_PORT};
 use requests::RequestQueue;
 
 const MAX_LINE: usize = 64 * 1024;
-/// Preferred TCP port, so joining by code has a predictable address. Any free
+/// Preferred TCP port, so firewall rules have a predictable target. Any free
 /// port is used when it is taken; discovery advertises the real one.
 const JAM_PORT: u16 = 38_721;
 const MAX_GUESTS: usize = 16;
@@ -250,21 +250,10 @@ impl JamController {
         Ok(())
     }
 
-    /// Join a Jam found by discovery; no address or code is needed.
+    /// Join a Jam found by discovery; its address and code come from the
+    /// discovery answer, so the user never types them.
     pub(crate) fn join_nearby(&mut self, jam: &NearbyJam) {
         self.connect(jam.address, jam.token.clone(), jam.host_name.clone());
-    }
-
-    /// Join by typing the host's address and six-digit code.
-    pub(crate) fn join(&mut self, address: &str, token: &str) -> Result<(), String> {
-        let address = parse_host_address(address)
-            .ok_or("Enter the host's address like 192.168.1.20 (shown on the host's screen)")?;
-        let token = normalize_code(token);
-        if !valid_token(&token) {
-            return Err("Enter the six-digit code shown on the host's screen".into());
-        }
-        self.connect(address, token, String::new());
-        Ok(())
     }
 
     fn connect(&mut self, address: SocketAddr, token: String, host_name: String) {
@@ -1169,24 +1158,6 @@ fn rand_seed() -> u64 {
     time ^ (std::process::id() as u64).rotate_left(17) ^ COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
-fn normalize_code(code: &str) -> String {
-    code.chars()
-        .filter(|character| !character.is_whitespace())
-        .collect()
-}
-
-/// Parse a typed host address. Only literal IPs are accepted so joining never
-/// performs a blocking name lookup; the port is optional.
-fn parse_host_address(address: &str) -> Option<SocketAddr> {
-    let address = address.trim();
-    address.parse::<SocketAddr>().ok().or_else(|| {
-        address
-            .parse::<Ipv4Addr>()
-            .ok()
-            .map(|ip| SocketAddr::from((ip, JAM_PORT)))
-    })
-}
-
 /// The name other devices see for this one: the computer name only.
 fn device_name() -> String {
     let name = std::env::var("COMPUTERNAME")
@@ -1295,29 +1266,6 @@ mod tests {
     fn host_codes_are_six_digits() {
         let code = make_token();
         assert!(valid_token(&code));
-    }
-
-    #[test]
-    fn joining_accepts_spaced_codes() {
-        assert_eq!(normalize_code("483 921"), "483921");
-    }
-
-    #[test]
-    fn typed_addresses_need_no_port_and_never_resolve_names() {
-        assert_eq!(
-            parse_host_address(" 192.168.1.20 "),
-            Some("192.168.1.20:38721".parse().unwrap())
-        );
-        assert_eq!(
-            parse_host_address("192.168.1.20:4000"),
-            Some("192.168.1.20:4000".parse().unwrap())
-        );
-        assert_eq!(parse_host_address("my-laptop"), None);
-
-        let mut guest = JamController::default();
-        assert!(guest.join("my-laptop", "123456").is_err());
-        assert!(guest.join("192.168.1.20", "12").is_err());
-        assert_eq!(guest.info.role, None);
     }
 
     #[test]
