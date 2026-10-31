@@ -84,6 +84,38 @@ impl YtMusicApp {
             Some(Role::Guest) => self.follow_host(),
             None => {}
         }
+        self.poll_firewall();
+    }
+
+    /// Ask Windows (with its permission prompt) to let MusiKPL through the
+    /// firewall, without blocking the interface while the prompt is open.
+    fn allow_through_firewall(&mut self) {
+        if self.firewall_rx.is_some() {
+            return;
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.firewall_rx = Some(receiver);
+        std::thread::spawn(move || {
+            let _ = sender.send(crate::infrastructure::system::allow_through_firewall());
+        });
+    }
+
+    fn poll_firewall(&mut self) {
+        let Some(receiver) = &self.firewall_rx else {
+            return;
+        };
+        let result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("The firewall change stopped unexpectedly".into())
+            }
+        };
+        self.firewall_rx = None;
+        self.set_jam_notice(match result {
+            Ok(()) => "MusiKPL is allowed through Windows Firewall. Do the same on the other PC if its Jams still don't appear.".into(),
+            Err(error) => error,
+        });
     }
 
     fn set_jam_notice(&mut self, text: String) {
@@ -479,6 +511,7 @@ impl YtMusicApp {
                 .or(info.notice.as_deref()),
             undiscoverable: hosting && !info.discoverable,
             waiting_for_guests: hosting && self.jam_hold.is_some(),
+            firewall_pending: self.firewall_rx.is_some(),
             discovery: &data.discovery,
             nearby: &data.nearby,
             requests: &data.requests,
@@ -519,6 +552,7 @@ impl YtMusicApp {
                 }
             }
             JamAction::RejectRequest(id) => self.jam.reject_request(id),
+            JamAction::AllowFirewall => self.allow_through_firewall(),
             JamAction::RemoveRequest(id) => {
                 if let Some(track) = self.jam.remove_request(id) {
                     self.queue.remove_id(&track.video_id);

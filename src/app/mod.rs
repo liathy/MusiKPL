@@ -78,6 +78,9 @@ struct YtMusicApp {
     pending_track: Option<Track>,
     /// Host: when a new track started waiting, paused, for guests to load it.
     jam_hold: Option<Instant>,
+    /// Adding the Windows Firewall rule for Jams, waiting on the user's
+    /// approval in the Windows prompt.
+    firewall_rx: Option<Receiver<Result<(), String>>>,
     overlay: Overlay,
     settings_page: SettingsPage,
     settings: Settings,
@@ -138,6 +141,7 @@ impl Default for YtMusicApp {
             jam_notice: None,
             pending_track: None,
             jam_hold: None,
+            firewall_rx: None,
             overlay: Overlay::None,
             settings_page: SettingsPage::General,
             settings: Settings::default(),

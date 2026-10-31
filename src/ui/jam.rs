@@ -32,6 +32,8 @@ pub(crate) enum JamAction {
     AcceptRequest(u64),
     RejectRequest(u64),
     RemoveRequest(u64),
+    /// Add the Windows Firewall rule Jams need on this PC.
+    AllowFirewall,
 }
 
 /// A Jam found on the local network.
@@ -70,6 +72,8 @@ pub(crate) struct JamView<'a> {
     pub(crate) undiscoverable: bool,
     /// Host: a new track is held until listeners have loaded it.
     pub(crate) waiting_for_guests: bool,
+    /// The firewall change is waiting for Windows' approval.
+    pub(crate) firewall_pending: bool,
     pub(crate) discovery: &'a DiscoveryView,
     pub(crate) nearby: &'a [NearbyView],
     pub(crate) requests: &'a [RequestView],
@@ -144,22 +148,66 @@ fn show_inactive(ui: &mut Ui, view: &JamView<'_>, r: &ResponsiveUi, actions: &mu
                 hint(ui, "Looking for Jams…", theme.secondary_text, r);
             });
         }
-        DiscoveryView::Ready if view.nearby.is_empty() => hint(
-            ui,
-            "No Jams nearby yet. They appear here when someone on your network starts one.",
-            theme.secondary_text,
-            r,
-        ),
-        DiscoveryView::Ready => {}
-        DiscoveryView::Unavailable(reason) => {
-            hint(ui, reason, theme.warning, r);
+        DiscoveryView::Ready if view.nearby.is_empty() => {
             hint(
                 ui,
-                "Nearby Jams can't be found on this network right now.",
+                "No Jams nearby yet. They appear here when someone on your network starts one.",
                 theme.secondary_text,
                 r,
             );
+            firewall_help(
+                ui,
+                view,
+                "Someone's Jam isn't showing up? Both PCs need to let MusiKPL through Windows Firewall.",
+                r,
+                actions,
+            );
         }
+        DiscoveryView::Ready => {}
+        DiscoveryView::Unavailable(reason) => {
+            hint(ui, reason, theme.warning, r);
+            firewall_help(
+                ui,
+                view,
+                "Letting MusiKPL through Windows Firewall usually fixes this.",
+                r,
+                actions,
+            );
+        }
+    }
+}
+
+/// An explanation and the button that adds MusiKPL's firewall rule.
+fn firewall_help(
+    ui: &mut Ui,
+    view: &JamView<'_>,
+    text: &str,
+    r: &ResponsiveUi,
+    actions: &mut Vec<JamAction>,
+) {
+    let theme = Theme::default();
+    hint(ui, text, theme.secondary_text, r);
+    if view.firewall_pending {
+        ui.horizontal(|ui| {
+            spinner(ui, r.rem(1.0));
+            hint(
+                ui,
+                "Waiting for Windows' permission…",
+                theme.secondary_text,
+                r,
+            );
+        });
+    } else if pill_button(
+        ui,
+        "Allow through firewall",
+        PillKind::Secondary,
+        PillSize::Small,
+        r,
+    )
+    .on_hover_text("Adds a Windows Firewall rule for MusiKPL. Windows asks for permission.")
+    .clicked()
+    {
+        actions.push(JamAction::AllowFirewall);
     }
 }
 
@@ -327,6 +375,15 @@ fn show_hosting(
             "People on your network can join from Nearby Jams.",
             theme.secondary_text,
             r,
+        );
+    }
+    if listeners == 0 {
+        firewall_help(
+            ui,
+            view,
+            "Not showing up on other PCs? Let MusiKPL through Windows Firewall on this PC.",
+            r,
+            actions,
         );
     }
     requests(ui, view, true, r, actions);
@@ -512,6 +569,7 @@ mod tests {
             notice: None,
             undiscoverable: false,
             waiting_for_guests: false,
+            firewall_pending: false,
             discovery,
             nearby,
             requests,
@@ -554,6 +612,30 @@ mod tests {
             &[],
         ));
         assert!(texts.iter().any(|text| text.contains("Looking for Jams")));
+
+        // With nothing found, the firewall fix is offered; with Jams listed,
+        // it isn't in the way.
+        let texts = run_panel(&view(
+            JamPanelState::Inactive,
+            &DiscoveryView::Ready,
+            &[],
+            &[],
+        ));
+        assert!(texts.iter().any(|text| text == "Allow through firewall"));
+        let texts = run_panel(&view(
+            JamPanelState::Inactive,
+            &DiscoveryView::Ready,
+            &nearby,
+            &[],
+        ));
+        assert!(!texts.iter().any(|text| text == "Allow through firewall"));
+        let texts = run_panel(&view(
+            JamPanelState::Hosting { listeners: 0 },
+            &DiscoveryView::Ready,
+            &[],
+            &[],
+        ));
+        assert!(texts.iter().any(|text| text == "Allow through firewall"));
 
         let blocked = DiscoveryView::Unavailable("Discovery is blocked.".into());
         let texts = run_panel(&view(JamPanelState::Inactive, &blocked, &[], &[]));
