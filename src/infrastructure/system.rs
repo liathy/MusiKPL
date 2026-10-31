@@ -1,45 +1,84 @@
 //! Small operating-system integrations: the screen's usable area, opening a
-//! link in the default browser, and starting with Windows.
+//! link in the default browser, starting with Windows, and the computer's
+//! network adapters.
 
-use std::process::Command;
+use std::{net::Ipv4Addr, process::Command};
 
 use super::process::hide_console;
 
-/// The desktop's usable area (without the taskbar) in logical points:
-/// `[left, top, width, height]`.
+/// The IPv4 address and prefix length of every active network adapter,
+/// loopback excluded. Used to send Jam discovery out of each one: a PC with
+/// a VPN or virtual adapter would otherwise only reach one network.
 #[cfg(windows)]
-pub(crate) fn work_area() -> Option<[f32; 4]> {
+pub(crate) fn ipv4_networks() -> Vec<(Ipv4Addr, u8)> {
     use windows_sys::Win32::{
-        Foundation::RECT,
-        UI::{
-            HiDpi::GetDpiForSystem,
-            WindowsAndMessaging::{SystemParametersInfoW, SPI_GETWORKAREA},
+        NetworkManagement::{
+            IpHelper::{
+                GetAdaptersAddresses, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER,
+                GAA_FLAG_SKIP_FRIENDLY_NAME, GAA_FLAG_SKIP_MULTICAST, IF_TYPE_SOFTWARE_LOOPBACK,
+                IP_ADAPTER_ADDRESSES_LH,
+            },
+            Ndis::IfOperStatusUp,
         },
+        Networking::WinSock::{AF_INET, SOCKADDR_IN},
     };
+    const ERROR_BUFFER_OVERFLOW: u32 = 111;
 
-    let mut area = RECT {
-        left: 0,
-        top: 0,
-        right: 0,
-        bottom: 0,
-    };
-    // SAFETY: SPI_GETWORKAREA writes one RECT into the pointer it is given.
-    let ok =
-        unsafe { SystemParametersInfoW(SPI_GETWORKAREA, 0, (&mut area as *mut RECT).cast(), 0) };
-    if ok == 0 {
-        return None;
+    let flags = GAA_FLAG_SKIP_ANYCAST
+        | GAA_FLAG_SKIP_MULTICAST
+        | GAA_FLAG_SKIP_DNS_SERVER
+        | GAA_FLAG_SKIP_FRIENDLY_NAME;
+    // u64 elements keep the buffer aligned for the structures written to it.
+    let mut size: u32 = 16 * 1024;
+    let mut buffer: Vec<u64> = Vec::new();
+    for _ in 0..3 {
+        buffer.resize((size as usize).div_ceil(8), 0);
+        // SAFETY: the buffer holds `size` writable bytes, as the call requires.
+        let status = unsafe {
+            GetAdaptersAddresses(
+                u32::from(AF_INET),
+                flags,
+                std::ptr::null(),
+                buffer.as_mut_ptr().cast(),
+                &mut size,
+            )
+        };
+        match status {
+            0 => break,
+            ERROR_BUFFER_OVERFLOW => continue,
+            _ => return Vec::new(),
+        }
     }
-    // SAFETY: no arguments; returns the system DPI.
-    let scale = unsafe { GetDpiForSystem() }.max(96) as f32 / 96.0;
-    let [left, top] = [area.left as f32 / scale, area.top as f32 / scale];
-    let width = (area.right - area.left) as f32 / scale;
-    let height = (area.bottom - area.top) as f32 / scale;
-    (width > 0.0 && height > 0.0).then_some([left, top, width, height])
+
+    let mut networks = Vec::new();
+    let mut adapter = buffer.as_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
+    // SAFETY: on success the buffer holds a linked list of adapters whose
+    // pointers stay valid while `buffer` lives; each is checked for null.
+    unsafe {
+        while !adapter.is_null() {
+            let current = &*adapter;
+            if current.OperStatus == IfOperStatusUp && current.IfType != IF_TYPE_SOFTWARE_LOOPBACK {
+                let mut unicast = current.FirstUnicastAddress;
+                while !unicast.is_null() {
+                    let entry = &*unicast;
+                    let sockaddr = entry.Address.lpSockaddr;
+                    if !sockaddr.is_null() && (*sockaddr).sa_family == AF_INET {
+                        let address = &*sockaddr.cast::<SOCKADDR_IN>();
+                        let ip = Ipv4Addr::from(u32::from_be(address.sin_addr.S_un.S_addr));
+                        networks.push((ip, entry.OnLinkPrefixLength));
+                    }
+                    unicast = entry.Next;
+                }
+            }
+            adapter = current.Next;
+        }
+    }
+    networks
 }
 
 #[cfg(not(windows))]
-pub(crate) fn work_area() -> Option<[f32; 4]> {
-    None
+pub(crate) fn ipv4_networks() -> Vec<(Ipv4Addr, u8)> {
+    Vec::new()
 }
 
 /// Open a web page in the default browser.

@@ -228,16 +228,50 @@ fn remember(shared: &Mutex<Shared>, jam: NearbyJam) {
     }
 }
 
-/// Where queries are sent. `std` cannot enumerate interfaces, so this covers
-/// the limited broadcast, the primary interface's /24, and this machine.
+/// Where queries are sent: the limited broadcast, the broadcast address of
+/// every local network the computer is on, and this machine.
+///
+/// Windows sends the limited broadcast (255.255.255.255) out of a single
+/// adapter, so on a PC with a VPN or virtual adapter it can miss the real
+/// LAN; each network's own broadcast address is routed out of the right one.
 fn query_targets(port: u16) -> Vec<SocketAddr> {
-    let mut targets = vec![SocketAddr::from((Ipv4Addr::BROADCAST, port))];
-    if let Some(local) = local_ipv4().filter(Ipv4Addr::is_private) {
-        let [a, b, c, _] = local.octets();
-        targets.push(SocketAddr::from((Ipv4Addr::new(a, b, c, 255), port)));
+    let networks = crate::infrastructure::system::ipv4_networks();
+    let mut addresses = vec![Ipv4Addr::BROADCAST];
+    addresses.extend(lan_broadcasts(&networks));
+    if addresses.len() == 1 {
+        // Adapters could not be listed: guess the primary network's /24.
+        if let Some(local) = local_ipv4().filter(Ipv4Addr::is_private) {
+            addresses.extend(subnet_broadcast(local, 24));
+        }
     }
-    targets.push(SocketAddr::from((Ipv4Addr::LOCALHOST, port)));
+    addresses.push(Ipv4Addr::LOCALHOST);
+    let mut targets: Vec<SocketAddr> = Vec::new();
+    for address in addresses {
+        let target = SocketAddr::from((address, port));
+        if !targets.contains(&target) {
+            targets.push(target);
+        }
+    }
     targets
+}
+
+/// Broadcast addresses of the private (LAN) networks in `networks`.
+fn lan_broadcasts(networks: &[(Ipv4Addr, u8)]) -> Vec<Ipv4Addr> {
+    networks
+        .iter()
+        .filter_map(|&(ip, prefix)| subnet_broadcast(ip, prefix))
+        .collect()
+}
+
+/// The broadcast address of `ip`'s network, for private LAN addresses with
+/// a sensible prefix; public, link-local, and point-to-point links are
+/// skipped.
+fn subnet_broadcast(ip: Ipv4Addr, prefix: u8) -> Option<Ipv4Addr> {
+    if !ip.is_private() || !(8..=30).contains(&prefix) {
+        return None;
+    }
+    let host_bits = u32::MAX >> prefix;
+    Some(Ipv4Addr::from(u32::from(ip) | host_bits))
 }
 
 /// The address of the interface used for the default route, if any.
@@ -316,5 +350,40 @@ mod tests {
         let targets = query_targets(4_000);
         assert!(targets.contains(&"255.255.255.255:4000".parse().unwrap()));
         assert!(targets.contains(&"127.0.0.1:4000".parse().unwrap()));
+        let unique: std::collections::HashSet<_> = targets.iter().collect();
+        assert_eq!(unique.len(), targets.len(), "no duplicate targets");
+    }
+
+    #[test]
+    fn every_lan_gets_its_own_broadcast_address() {
+        let networks = [
+            ("192.168.1.66".parse().unwrap(), 24),
+            ("10.20.30.40".parse().unwrap(), 16),
+            ("172.19.0.1".parse().unwrap(), 30),
+            // Not LANs: a public address, link-local, a /32 and a /31 link.
+            ("8.8.8.8".parse().unwrap(), 24),
+            ("169.254.10.1".parse().unwrap(), 16),
+            ("192.168.5.5".parse().unwrap(), 32),
+            ("10.0.0.1".parse().unwrap(), 31),
+        ];
+        let broadcasts: Vec<Ipv4Addr> = lan_broadcasts(&networks);
+        assert_eq!(
+            broadcasts,
+            [
+                Ipv4Addr::new(192, 168, 1, 255),
+                Ipv4Addr::new(10, 20, 255, 255),
+                Ipv4Addr::new(172, 19, 0, 3),
+            ]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn this_computers_adapters_can_be_listed() {
+        // Every Windows machine running the tests has a network adapter
+        // with an IPv4 address; none of them is loopback.
+        let networks = crate::infrastructure::system::ipv4_networks();
+        assert!(networks.iter().all(|(ip, _)| !ip.is_loopback()));
+        assert!(networks.iter().all(|(_, prefix)| *prefix <= 32));
     }
 }
