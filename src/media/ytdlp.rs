@@ -1,5 +1,5 @@
 use crate::{
-    domain::{CookieBrowser, Track, YtEntry},
+    domain::{Track, YtEntry},
     infrastructure::process::{hide_console, run_registered, ProcessRegistry},
 };
 use std::{
@@ -44,7 +44,6 @@ pub(crate) fn query_ytdlp(
     tools: &Tools,
     query: &str,
     single: bool,
-    cookie_browser: CookieBrowser,
     registry: &ProcessRegistry,
 ) -> Result<Vec<Track>, String> {
     tools.ready()?;
@@ -55,7 +54,6 @@ pub(crate) fn query_ytdlp(
     };
     let mut command = Command::new(&tools.yt_dlp);
     hide_console(&mut command);
-    add_cookie_args(&mut command, cookie_browser)?;
     command.args([
         "--dump-json",
         "--skip-download",
@@ -107,13 +105,11 @@ pub(crate) fn parse_ytdlp_entries(stdout: &[u8], stderr: &[u8]) -> Result<Vec<Yt
 pub(crate) fn resolve_audio_url(
     tools: &Tools,
     track: &Track,
-    cookie_browser: CookieBrowser,
     registry: &ProcessRegistry,
 ) -> Result<String, String> {
     tools.ready()?;
     let mut command = Command::new(&tools.yt_dlp);
     hide_console(&mut command);
-    add_cookie_args(&mut command, cookie_browser)?;
     command.args([
         "--get-url",
         "--format",
@@ -121,10 +117,9 @@ pub(crate) fn resolve_audio_url(
         "--no-playlist",
         "--no-warnings",
         &track.url(),
+        "--extractor-args",
+        "youtube:player_client=android",
     ]);
-    if cookie_browser == CookieBrowser::None {
-        command.args(["--extractor-args", "youtube:player_client=android"]);
-    }
     let output = run_registered(command, registry)?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
@@ -135,37 +130,4 @@ pub(crate) fn resolve_audio_url(
         .find(|line| line.starts_with("http"))
         .map(str::to_owned)
         .ok_or_else(|| "yt-dlp did not return an audio stream".into())
-}
-
-fn helium_cookie_profile() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        let local_app_data = std::env::var_os("LOCALAPPDATA").map(PathBuf::from)?;
-        let candidates = [
-            local_app_data.join("net.imput.helium").join("User Data"),
-            local_app_data
-                .join("imput")
-                .join("Helium")
-                .join("User Data"),
-            local_app_data.join("Helium").join("User Data"),
-        ];
-        candidates.into_iter().find(|path| path.exists())
-    }
-    #[cfg(not(windows))]
-    {
-        None
-    }
-}
-
-fn add_cookie_args(command: &mut Command, browser: CookieBrowser) -> Result<(), String> {
-    if browser == CookieBrowser::Helium {
-        let profile = helium_cookie_profile().ok_or_else(|| "Helium profile was not found. Sign in to Helium first, or verify its User Data folder.".to_string())?;
-        command.args([
-            "--cookies-from-browser",
-            &format!("chromium:{}", profile.display()),
-        ]);
-    } else if let Some(name) = browser.yt_dlp_name() {
-        command.args(["--cookies-from-browser", name]);
-    }
-    Ok(())
 }
