@@ -3,18 +3,13 @@
 
 use std::time::{Duration, Instant};
 
-use eframe::egui;
-
 use crate::{
     domain::Track,
     jam::{
-        self, DiscoveryStatus, DriftAction, JamEvent, LoadStatus, PlaybackSnapshot, PlaybackState,
-        Role, SyncReason, TrackRef,
+        self, DiscoveryStatus, DriftAction, JamEvent, LoadStatus, NearbyJam, PlaybackSnapshot,
+        PlaybackState, Role, SyncReason, TrackRef,
     },
-    ui::{
-        jam::{self as jam_ui, DiscoveryView, JamAction, JamView, NearbyView, RequestView},
-        responsive::ResponsiveUi,
-    },
+    ui::jam::{self as jam_ui, DiscoveryView, JamAction, JamView, NearbyView, RequestView},
 };
 
 use super::{errors::AppError, YtMusicApp};
@@ -227,7 +222,7 @@ impl YtMusicApp {
         self.jam_sync.seek_attempts = 0;
         // Never keep showing or playing a different track as if it were synced.
         self.current = None;
-        self.start_track(track_from(track), false, false);
+        self.start_track(track_from(track), false);
         self.jam
             .report_load(snapshot.revision, &track.video_id, LoadStatus::Loading);
         self.jam_sync.status = "Loading the host's track…".into();
@@ -420,7 +415,8 @@ impl YtMusicApp {
         });
     }
 
-    pub(super) fn show_jam_panel(&mut self, ui: &mut egui::Ui, responsive: &ResponsiveUi) {
+    /// Snapshot what the Jam section of the menu shows this frame.
+    pub(super) fn jam_panel_data(&mut self) -> JamPanelData {
         if self
             .jam_notice
             .as_ref()
@@ -429,7 +425,7 @@ impl YtMusicApp {
             self.jam_notice = None;
         }
         let nearby_jams = self.jam.nearby();
-        let nearby: Vec<NearbyView> = nearby_jams
+        let nearby = nearby_jams
             .iter()
             .map(|jam| NearbyView {
                 session_id: jam.session_id,
@@ -444,7 +440,7 @@ impl YtMusicApp {
             DiscoveryStatus::Unavailable(reason) => DiscoveryView::Unavailable(reason),
         };
         let me = self.jam.participant_id();
-        let requests: Vec<RequestView> = self
+        let requests = self
             .jam
             .requests()
             .iter()
@@ -457,11 +453,19 @@ impl YtMusicApp {
                 mine: self.is_guest() && me == Some(entry.requester_id),
             })
             .collect();
+        JamPanelData {
+            nearby_jams,
+            nearby,
+            discovery,
+            requests,
+        }
+    }
+
+    pub(super) fn jam_view<'a>(&'a self, data: &'a JamPanelData) -> JamView<'a> {
         let info = &self.jam.info;
         let hosting = info.role == Some(Role::Host);
-        let view = JamView {
+        JamView {
             state: jam_ui::state(info.role, info.connecting, info.peers),
-            host_code: &info.token,
             host_name: &info.host_name,
             status: if self.is_guest() && !info.connecting {
                 &self.jam_sync.status
@@ -473,69 +477,63 @@ impl YtMusicApp {
                 .as_ref()
                 .map(|(text, _)| text.as_str())
                 .or(info.notice.as_deref()),
-            manual_address: (hosting && !info.discoverable).then_some(info.address.as_str()),
+            undiscoverable: hosting && !info.discoverable,
             waiting_for_guests: hosting && self.jam_hold.is_some(),
-            discovery: &discovery,
-            nearby: &nearby,
-            requests: &requests,
-        };
-        let actions = jam_ui::show(
-            ui,
-            &view,
-            &mut self.jam_join_address,
-            &mut self.jam_join_token,
-            self.jam_show_code_join,
-            responsive,
-        );
+            discovery: &data.discovery,
+            nearby: &data.nearby,
+            requests: &data.requests,
+        }
+    }
 
-        for action in actions {
-            match action {
-                JamAction::Start => {
+    pub(super) fn apply_jam_action(&mut self, action: JamAction, data: &JamPanelData) {
+        match action {
+            JamAction::Start => {
+                self.jam_notice = None;
+                if let Err(error) = self.jam.host() {
+                    self.error = Some(AppError::Jam(error));
+                }
+            }
+            JamAction::JoinNearby(session_id) => {
+                if let Some(jam) = data
+                    .nearby_jams
+                    .iter()
+                    .find(|jam| jam.session_id == session_id)
+                {
                     self.jam_notice = None;
-                    if let Err(error) = self.jam.host() {
-                        self.error = Some(AppError::Jam(error));
-                    }
+                    self.error = None;
+                    self.jam.join_nearby(jam);
                 }
-                JamAction::JoinNearby(session_id) => {
-                    if let Some(jam) = nearby_jams.iter().find(|jam| jam.session_id == session_id) {
-                        self.jam_notice = None;
-                        self.error = None;
-                        self.jam.join_nearby(jam);
-                    }
+            }
+            JamAction::End => {
+                if self.is_guest() {
+                    self.release_guest_playback();
                 }
-                JamAction::ToggleCodeJoin => {
-                    self.jam_show_code_join = !self.jam_show_code_join;
+                self.jam_notice = None;
+                self.jam.leave();
+            }
+            // Request decisions change the host's own playback queue;
+            // the controller refuses them unless this device is the host.
+            JamAction::AcceptRequest(id) => {
+                if let Some(track) = self.jam.accept_request(id) {
+                    self.add_to_queue(track_from(&track));
                 }
-                JamAction::Join => {
-                    self.jam_notice = None;
-                    match self.jam.join(&self.jam_join_address, &self.jam_join_token) {
-                        Ok(()) => self.error = None,
-                        Err(error) => self.set_jam_notice(error),
-                    }
-                }
-                JamAction::End => {
-                    if self.is_guest() {
-                        self.release_guest_playback();
-                    }
-                    self.jam_notice = None;
-                    self.jam.leave();
-                }
-                // Request decisions change the host's own playback queue;
-                // the controller refuses them unless this device is the host.
-                JamAction::AcceptRequest(id) => {
-                    if let Some(track) = self.jam.accept_request(id) {
-                        self.queue.enqueue_unique(track_from(&track));
-                    }
-                }
-                JamAction::RejectRequest(id) => self.jam.reject_request(id),
-                JamAction::RemoveRequest(id) => {
-                    if let Some(track) = self.jam.remove_request(id) {
-                        self.queue.remove_id(&track.video_id);
-                    }
+            }
+            JamAction::RejectRequest(id) => self.jam.reject_request(id),
+            JamAction::RemoveRequest(id) => {
+                if let Some(track) = self.jam.remove_request(id) {
+                    self.queue.remove_id(&track.video_id);
                 }
             }
         }
     }
+}
+
+/// Owned data behind one frame of the Jam section.
+pub(super) struct JamPanelData {
+    nearby_jams: Vec<NearbyJam>,
+    nearby: Vec<NearbyView>,
+    discovery: DiscoveryView,
+    requests: Vec<RequestView>,
 }
 
 #[cfg(test)]

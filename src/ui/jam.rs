@@ -1,9 +1,20 @@
+//! The Jam section of the menu: start a Jam, join a nearby one, and, during
+//! a session, its status and song requests.
+
+use eframe::egui::{self, pos2, vec2, Align2, Color32, CursorIcon, Rect, Sense, Stroke, Ui};
+
 use crate::{
     jam::{RequestStatus, Role},
     theme::Theme,
-    ui::responsive::ResponsiveUi,
+    ui::{
+        fonts,
+        responsive::ResponsiveUi,
+        widgets::{
+            elided, hover_amount, item_id, mix, pill_button, pointer_amount, spinner, PillKind,
+            PillSize,
+        },
+    },
 };
-use eframe::egui;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum JamPanelState {
@@ -17,8 +28,6 @@ pub(crate) enum JamPanelState {
 pub(crate) enum JamAction {
     Start,
     JoinNearby(u64),
-    ToggleCodeJoin,
-    Join,
     End,
     AcceptRequest(u64),
     RejectRequest(u64),
@@ -48,18 +57,17 @@ pub(crate) struct RequestView {
     pub(crate) mine: bool,
 }
 
-/// Everything the Jam panel shows, borrowed from the application.
+/// Everything the Jam section shows, borrowed from the application.
 pub(crate) struct JamView<'a> {
     pub(crate) state: JamPanelState,
-    pub(crate) host_code: &'a str,
     /// The host's name while connecting to or listening with it.
     pub(crate) host_name: &'a str,
     /// Connection or synchronization status for the current session.
     pub(crate) status: &'a str,
     /// A recent outcome worth telling the user, such as how a session ended.
     pub(crate) notice: Option<&'a str>,
-    /// Host: `ip:port` to share when nearby discovery is unavailable.
-    pub(crate) manual_address: Option<&'a str>,
+    /// Host: other devices cannot find this Jam automatically.
+    pub(crate) undiscoverable: bool,
     /// Host: a new track is held until listeners have loaded it.
     pub(crate) waiting_for_guests: bool,
     pub(crate) discovery: &'a DiscoveryView,
@@ -67,269 +75,365 @@ pub(crate) struct JamView<'a> {
     pub(crate) requests: &'a [RequestView],
 }
 
-pub(crate) fn show(
-    ui: &mut egui::Ui,
-    view: &JamView<'_>,
-    address: &mut String,
-    code: &mut String,
-    show_code_join: bool,
-    responsive: &ResponsiveUi,
-) -> Vec<JamAction> {
+pub(crate) fn show(ui: &mut Ui, view: &JamView<'_>, r: &ResponsiveUi) -> Vec<JamAction> {
     let theme = Theme::default();
     let mut actions = Vec::new();
-
-    ui.label(
-        egui::RichText::new("LAN JAM")
-            .size(responsive.font_caption)
-            .color(theme.secondary_text),
-    );
+    ui.spacing_mut().item_spacing.y = r.rem(0.5);
     if let Some(notice) = view.notice {
-        ui.small(egui::RichText::new(notice).color(theme.accent));
+        hint(ui, notice, theme.warning, r);
     }
     match view.state {
-        JamPanelState::Inactive => show_inactive(
-            ui,
-            view,
-            address,
-            code,
-            show_code_join,
-            responsive,
-            &mut actions,
-        ),
-        JamPanelState::Connecting => show_connecting(ui, view, responsive, &mut actions),
-        JamPanelState::Hosting { listeners } => {
-            show_hosting(ui, view, listeners, responsive, &mut actions)
-        }
-        JamPanelState::Joined => show_joined(ui, view, responsive, &mut actions),
+        JamPanelState::Inactive => show_inactive(ui, view, r, &mut actions),
+        JamPanelState::Connecting => show_connecting(ui, view, r, &mut actions),
+        JamPanelState::Hosting { listeners } => show_hosting(ui, view, listeners, r, &mut actions),
+        JamPanelState::Joined => show_joined(ui, view, r, &mut actions),
     }
     actions
 }
 
-fn hint(ui: &mut egui::Ui, text: &str) {
-    ui.small(egui::RichText::new(text).color(Theme::default().secondary_text));
+fn heading(ui: &mut Ui, text: &str, r: &ResponsiveUi) {
+    ui.label(
+        egui::RichText::new(text)
+            .font(fonts::display(r.rem(1.5)))
+            .color(Theme::default().text),
+    );
 }
 
-fn show_inactive(
-    ui: &mut egui::Ui,
-    view: &JamView<'_>,
-    address: &mut String,
-    code: &mut String,
-    show_code_join: bool,
-    responsive: &ResponsiveUi,
-    actions: &mut Vec<JamAction>,
-) {
-    let theme = Theme::default();
-    if ui.button("Start a Jam").clicked() {
-        actions.push(JamAction::Start);
-    }
+fn hint(ui: &mut Ui, text: &str, color: Color32, r: &ResponsiveUi) {
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(text)
+                .font(fonts::body(r.rem(0.8125)))
+                .color(color),
+        )
+        .wrap(),
+    );
+}
 
-    ui.add_space(responsive.space_xs);
-    ui.label(egui::RichText::new("Nearby Jams").size(responsive.font_body));
+fn section_label(ui: &mut Ui, text: &str, r: &ResponsiveUi) {
+    ui.label(
+        egui::RichText::new(text)
+            .font(fonts::body(r.rem(0.875)))
+            .color(Theme::default().secondary_text),
+    );
+}
+
+fn show_inactive(ui: &mut Ui, view: &JamView<'_>, r: &ResponsiveUi, actions: &mut Vec<JamAction>) {
+    let theme = Theme::default();
+    ui.horizontal(|ui| {
+        heading(ui, "Start a Jam", r);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if pill_button(ui, "Start", PillKind::Primary, PillSize::Small, r)
+                .on_hover_text("Let people on your network listen along")
+                .clicked()
+            {
+                actions.push(JamAction::Start);
+            }
+        });
+    });
+    section_label(ui, "Nearby Jams", r);
     for jam in view.nearby {
-        // One click joins; the address and code come from discovery.
-        if ui
-            .add(egui::Button::new(&jam.host).truncate())
-            .on_hover_text("Join this Jam")
-            .clicked()
-        {
+        if jam_item(ui, jam, r) {
             actions.push(JamAction::JoinNearby(jam.session_id));
         }
-        let listeners = match jam.listeners {
-            0 => "No listeners yet".to_owned(),
-            1 => "1 listener".to_owned(),
-            count => format!("{count} listeners"),
-        };
-        let details = match &jam.track {
-            Some(track) => format!("{track} · {listeners}"),
-            None => listeners,
-        };
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(details)
-                    .small()
-                    .color(theme.secondary_text),
-            )
-            .truncate(),
-        );
     }
     match view.discovery {
         DiscoveryView::Searching => {
             ui.horizontal(|ui| {
-                ui.spinner();
-                hint(ui, "Looking for Jams…");
+                spinner(ui, r.rem(1.0));
+                hint(ui, "Looking for Jams…", theme.secondary_text, r);
             });
         }
-        DiscoveryView::Ready if view.nearby.is_empty() => {
-            hint(
-                ui,
-                "No Jams nearby yet. They appear here automatically when someone on your network starts one.",
-            );
-        }
+        DiscoveryView::Ready if view.nearby.is_empty() => hint(
+            ui,
+            "No Jams nearby yet. They appear here when someone on your network starts one.",
+            theme.secondary_text,
+            r,
+        ),
         DiscoveryView::Ready => {}
         DiscoveryView::Unavailable(reason) => {
-            ui.small(egui::RichText::new(reason).color(theme.accent));
-            hint(ui, "You can still join with the host's code below.");
-        }
-    }
-
-    if ui.button("Join with code").clicked() {
-        actions.push(JamAction::ToggleCodeJoin);
-    }
-    if show_code_join {
-        ui.add(
-            egui::TextEdit::singleline(address)
-                .id_salt("jam_join_address")
-                .hint_text("Host address"),
-        );
-        ui.add(
-            egui::TextEdit::singleline(code)
-                .id_salt("jam_join_code")
-                .hint_text("Six-digit code"),
-        );
-        if ui.button("Join").clicked() {
-            actions.push(JamAction::Join);
+            hint(ui, reason, theme.warning, r);
+            hint(
+                ui,
+                "Nearby Jams can't be found on this network right now.",
+                theme.secondary_text,
+                r,
+            );
         }
     }
 }
 
+/// One nearby Jam: avatar, host name, what's playing, and Join. Returns true
+/// when Join was clicked.
+fn jam_item(ui: &mut Ui, jam: &NearbyView, r: &ResponsiveUi) -> bool {
+    let theme = Theme::default();
+    let (rect, row) =
+        ui.allocate_exact_size(vec2(ui.available_width(), r.rem(3.25)), Sense::hover());
+    let hover = pointer_amount(ui, &row);
+    let painter = ui.painter();
+    painter.rect_filled(
+        rect,
+        r.rem(0.625),
+        mix(
+            Color32::from_rgba_unmultiplied(34, 34, 34, 128),
+            Color32::from_rgba_unmultiplied(34, 34, 34, 230),
+            hover,
+        ),
+    );
+    let inner = rect.shrink(r.rem(0.5));
+    let avatar = Rect::from_min_size(
+        pos2(inner.left(), inner.center().y - r.rem(1.125)),
+        r.rem2(2.25, 2.25),
+    );
+    painter.circle_filled(avatar.center(), avatar.width() / 2.0, theme.surface);
+    let initial = jam
+        .host
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().collect::<String>())
+        .unwrap_or_else(|| "?".into());
+    painter.text(
+        avatar.center(),
+        Align2::CENTER_CENTER,
+        initial,
+        fonts::display(r.rem(1.0)),
+        theme.text,
+    );
+
+    // Join, drawn as a small white pill on the right.
+    let label_font = fonts::display(r.rem(0.875));
+    let label = painter.layout_no_wrap("Join".into(), label_font, Color32::BLACK);
+    let join_rect = Rect::from_min_size(
+        pos2(
+            inner.right() - label.size().x - r.rem(1.75),
+            inner.center().y - (label.size().y + r.rem(0.25)) / 2.0,
+        ),
+        label.size() + r.rem2(1.75, 0.25),
+    );
+    let join = ui.interact(
+        join_rect,
+        item_id("join_jam", &jam.session_id.to_string()),
+        Sense::click(),
+    );
+    let join_hover = hover_amount(ui, &join);
+    let painter = ui.painter();
+    painter.rect_filled(
+        join_rect,
+        join_rect.height() / 2.0,
+        mix(theme.text, theme.primary_hover, join_hover),
+    );
+    painter.galley(
+        join_rect.center() - label.size() / 2.0,
+        label,
+        Color32::BLACK,
+    );
+
+    let text_left = avatar.right() + r.rem(0.625);
+    let text_width = (join_rect.left() - r.rem(0.5) - text_left).max(0.0);
+    let name_rect = Rect::from_min_size(
+        pos2(text_left, inner.center().y - r.rem(1.125)),
+        vec2(text_width, r.rem(1.375)),
+    );
+    elided(
+        painter,
+        name_rect,
+        &jam.host,
+        fonts::display(r.rem(1.0)),
+        theme.text,
+        Align2::LEFT_CENTER,
+    );
+    let listening = format!("{} listening", jam.listeners);
+    let details = match &jam.track {
+        Some(track) => format!("{track} · {listening}"),
+        None => listening,
+    };
+    elided(
+        painter,
+        Rect::from_min_size(
+            pos2(text_left, name_rect.bottom()),
+            vec2(text_width, r.rem(1.0)),
+        ),
+        &details,
+        fonts::body(r.rem(0.75)),
+        theme.secondary_text,
+        Align2::LEFT_CENTER,
+    );
+    join.on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text("Join this Jam")
+        .clicked()
+}
+
 fn show_connecting(
-    ui: &mut egui::Ui,
+    ui: &mut Ui,
     view: &JamView<'_>,
-    responsive: &ResponsiveUi,
+    r: &ResponsiveUi,
     actions: &mut Vec<JamAction>,
 ) {
-    ui.add_space(responsive.space_xs);
+    let theme = Theme::default();
     ui.horizontal(|ui| {
-        ui.spinner();
-        ui.label(if view.host_name.is_empty() {
-            "Connecting…".to_owned()
-        } else {
-            format!("Connecting to {}…", view.host_name)
-        });
+        spinner(ui, r.rem(1.0));
+        heading(
+            ui,
+            &if view.host_name.is_empty() {
+                "Connecting…".to_owned()
+            } else {
+                format!("Connecting to {}…", view.host_name)
+            },
+            r,
+        );
     });
-    hint(ui, view.status);
-    if ui.button("Cancel").clicked() {
+    hint(ui, view.status, theme.secondary_text, r);
+    if pill_button(ui, "Cancel", PillKind::Secondary, PillSize::Small, r).clicked() {
         actions.push(JamAction::End);
     }
 }
 
 fn show_hosting(
-    ui: &mut egui::Ui,
+    ui: &mut Ui,
     view: &JamView<'_>,
     listeners: usize,
-    responsive: &ResponsiveUi,
+    r: &ResponsiveUi,
     actions: &mut Vec<JamAction>,
 ) {
     let theme = Theme::default();
-    ui.add_space(responsive.space_xs);
-    ui.label(egui::RichText::new("Your Jam is live").size(responsive.font_body));
-    ui.small(format!(
-        "{listeners} listener{} connected",
-        if listeners == 1 { "" } else { "s" }
-    ));
+    heading(ui, "Your Jam is live", r);
+    hint(
+        ui,
+        &format!(
+            "{listeners} listener{} connected",
+            if listeners == 1 { "" } else { "s" }
+        ),
+        theme.secondary_text,
+        r,
+    );
     if view.waiting_for_guests {
-        ui.small(
-            egui::RichText::new("Starting when everyone has loaded the track…").color(theme.accent),
+        hint(
+            ui,
+            "Starting when everyone has loaded the track…",
+            theme.warning,
+            r,
         );
     }
-    match view.manual_address {
-        None => hint(ui, "People on your network can join from Nearby Jams."),
-        Some(address) => {
-            ui.small(
-                egui::RichText::new("This Jam can't be found automatically on this network.")
-                    .color(theme.accent),
-            );
-            hint(ui, &format!("Guests can join with code at {address}"));
-        }
+    if view.undiscoverable {
+        hint(
+            ui,
+            "Other devices can't find this Jam automatically on this network.",
+            theme.warning,
+            r,
+        );
+    } else {
+        hint(
+            ui,
+            "People on your network can join from Nearby Jams.",
+            theme.secondary_text,
+            r,
+        );
     }
-    ui.small(format!("Code: {}", display_code(view.host_code)));
-
-    if !view.requests.is_empty() {
-        ui.add_space(responsive.space_xs);
-        ui.label(egui::RichText::new("Requests").size(responsive.font_body));
-        for request in view.requests {
-            show_request(ui, request, true, actions);
-        }
-    }
-    ui.add_space(responsive.space_xs);
-    if ui.button("End Jam").clicked() {
+    requests(ui, view, true, r, actions);
+    if pill_button(ui, "End Jam", PillKind::Secondary, PillSize::Small, r).clicked() {
         actions.push(JamAction::End);
     }
 }
 
-fn show_joined(
-    ui: &mut egui::Ui,
-    view: &JamView<'_>,
-    responsive: &ResponsiveUi,
-    actions: &mut Vec<JamAction>,
-) {
-    ui.add_space(responsive.space_xs);
-    ui.label(
-        egui::RichText::new(if view.host_name.is_empty() {
+fn show_joined(ui: &mut Ui, view: &JamView<'_>, r: &ResponsiveUi, actions: &mut Vec<JamAction>) {
+    let theme = Theme::default();
+    heading(
+        ui,
+        &if view.host_name.is_empty() {
             "You joined the Jam".to_owned()
         } else {
             format!("Listening with {}", view.host_name)
-        })
-        .size(responsive.font_body),
+        },
+        r,
     );
-    hint(ui, view.status);
+    hint(ui, view.status, theme.secondary_text, r);
     hint(
         ui,
-        "The host controls playback. Search and press Request to suggest a song.",
+        "The host controls playback. Press + on a song to request it.",
+        theme.secondary_text,
+        r,
     );
-
-    if !view.requests.is_empty() {
-        ui.add_space(responsive.space_xs);
-        ui.label(egui::RichText::new("Requests").size(responsive.font_body));
-        for request in view.requests {
-            show_request(ui, request, false, actions);
-        }
-    }
-    ui.add_space(responsive.space_xs);
-    if ui.button("Leave Jam").clicked() {
+    requests(ui, view, false, r, actions);
+    if pill_button(ui, "Leave Jam", PillKind::Secondary, PillSize::Small, r).clicked() {
         actions.push(JamAction::End);
+    }
+}
+
+fn requests(
+    ui: &mut Ui,
+    view: &JamView<'_>,
+    host: bool,
+    r: &ResponsiveUi,
+    actions: &mut Vec<JamAction>,
+) {
+    if view.requests.is_empty() {
+        return;
+    }
+    section_label(ui, "Requests", r);
+    for request in view.requests {
+        show_request(ui, request, host, r, actions);
     }
 }
 
 fn show_request(
-    ui: &mut egui::Ui,
+    ui: &mut Ui,
     request: &RequestView,
     host: bool,
+    r: &ResponsiveUi,
     actions: &mut Vec<JamAction>,
 ) {
     let theme = Theme::default();
-    ui.add(egui::Label::new(&request.title).truncate());
-    let who = if request.mine {
-        "You"
-    } else {
-        request.requester.as_str()
-    };
-    ui.add(
-        egui::Label::new(
-            egui::RichText::new(format!("{who} · {}", status_label(request.status)))
-                .small()
-                .color(theme.secondary_text),
-        )
-        .truncate(),
-    );
-    // Only the host is ever offered request controls.
-    if !host {
-        return;
-    }
-    ui.horizontal_wrapped(|ui| match request.status {
-        RequestStatus::Pending => {
-            if ui.small_button("Accept").clicked() {
-                actions.push(JamAction::AcceptRequest(request.id));
+    egui::Frame::none()
+        .fill(Color32::from_rgba_unmultiplied(34, 34, 34, 128))
+        .stroke(Stroke::NONE)
+        .rounding(r.rem(0.625))
+        .inner_margin(egui::Margin::same(r.rem(0.5)))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(&request.title)
+                        .font(fonts::display(r.rem(1.0)))
+                        .color(theme.text),
+                )
+                .truncate(),
+            );
+            let who = if request.mine {
+                "You"
+            } else {
+                request.requester.as_str()
+            };
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(format!("{who} · {}", status_label(request.status)))
+                        .font(fonts::body(r.rem(0.75)))
+                        .color(theme.secondary_text),
+                )
+                .truncate(),
+            );
+            // Only the host is ever offered request controls.
+            if !host {
+                return;
             }
-            if ui.small_button("Reject").clicked() {
-                actions.push(JamAction::RejectRequest(request.id));
-            }
-        }
-        RequestStatus::Accepted if ui.small_button("Remove").clicked() => {
-            actions.push(JamAction::RemoveRequest(request.id));
-        }
-        _ => {}
-    });
+            ui.horizontal(|ui| match request.status {
+                RequestStatus::Pending => {
+                    if pill_button(ui, "Accept", PillKind::Primary, PillSize::Small, r).clicked() {
+                        actions.push(JamAction::AcceptRequest(request.id));
+                    }
+                    if pill_button(ui, "Reject", PillKind::Secondary, PillSize::Small, r).clicked()
+                    {
+                        actions.push(JamAction::RejectRequest(request.id));
+                    }
+                }
+                RequestStatus::Accepted
+                    if pill_button(ui, "Remove", PillKind::Secondary, PillSize::Small, r)
+                        .clicked() =>
+                {
+                    actions.push(JamAction::RemoveRequest(request.id));
+                }
+                _ => {}
+            });
+        });
 }
 
 pub(crate) fn status_label(status: RequestStatus) -> &'static str {
@@ -339,14 +443,6 @@ pub(crate) fn status_label(status: RequestStatus) -> &'static str {
         RequestStatus::Played => "Played",
         RequestStatus::Rejected => "Declined",
         RequestStatus::Removed => "Removed by the host",
-    }
-}
-
-fn display_code(code: &str) -> String {
-    if code.len() == 6 && code.bytes().all(|byte| byte.is_ascii_digit()) {
-        format!("{} {}", &code[..3], &code[3..])
-    } else {
-        code.into()
     }
 }
 
@@ -362,12 +458,7 @@ pub(crate) fn state(role: Option<Role>, connecting: bool, listeners: usize) -> J
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn groups_six_digit_codes_for_sharing() {
-        assert_eq!(display_code("483921"), "483 921");
-        assert_eq!(display_code("not-a-code"), "not-a-code");
-    }
+    use crate::ui::responsive::DESIGN_SIZE;
 
     #[test]
     fn maps_roles_to_panel_states() {
@@ -382,11 +473,14 @@ mod tests {
 
     fn run_panel(view: &JamView<'_>) -> Vec<String> {
         let ctx = egui::Context::default();
-        let responsive = ResponsiveUi::from_size(egui::vec2(1_000.0, 700.0));
-        let (mut address, mut code) = (String::new(), String::new());
+        // The design's fonts take effect from the next frame.
+        crate::ui::fonts::install(&ctx);
+        let _ = ctx.run(egui::RawInput::default(), |_| {});
+        let r = ResponsiveUi::from_size(DESIGN_SIZE);
         let output = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                show(ui, view, &mut address, &mut code, false, &responsive);
+                ui.set_width(r.rem(16.25));
+                show(ui, view, &r);
             });
         });
         let mut texts = Vec::new();
@@ -413,11 +507,10 @@ mod tests {
     ) -> JamView<'a> {
         JamView {
             state,
-            host_code: "483921",
             host_name: "Desk",
             status: "In sync",
             notice: None,
-            manual_address: None,
+            undiscoverable: false,
             waiting_for_guests: false,
             discovery,
             nearby,
@@ -450,7 +543,9 @@ mod tests {
             &[],
         ));
         assert!(texts.iter().any(|text| text == "Living room"));
-        assert!(texts.iter().any(|text| text == "Song · 2 listeners"));
+        assert!(texts.iter().any(|text| text == "Song · 2 listening"));
+        assert!(texts.iter().any(|text| text == "Join"));
+        assert!(!texts.iter().any(|text| text.contains("code")));
 
         let texts = run_panel(&view(
             JamPanelState::Inactive,
@@ -463,7 +558,6 @@ mod tests {
         let blocked = DiscoveryView::Unavailable("Discovery is blocked.".into());
         let texts = run_panel(&view(JamPanelState::Inactive, &blocked, &[], &[]));
         assert!(texts.iter().any(|text| text == "Discovery is blocked."));
-        assert!(texts.iter().any(|text| text.contains("host's code")));
     }
 
     #[test]

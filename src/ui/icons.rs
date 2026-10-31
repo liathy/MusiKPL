@@ -1,55 +1,72 @@
-use crate::theme::Theme;
-use eframe::egui;
+use eframe::egui::{self, Color32, Rect, SizeHint, TextureHandle};
 
-const MUSIC_ICON: &[u8] =
-    include_bytes!("../assets/icons/music_note_2_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.svg");
-const PLAY_ICON: &[u8] =
-    include_bytes!("../assets/icons/play_arrow_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.svg");
-const PAUSE_ICON: &[u8] =
-    include_bytes!("../assets/icons/pause_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.svg");
-const PREVIOUS_ICON: &[u8] =
-    include_bytes!("../assets/icons/skip_previous_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.svg");
-const NEXT_ICON: &[u8] =
-    include_bytes!("../assets/icons/skip_next_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.svg");
+macro_rules! icon_files {
+    ($($field:ident => $file:literal),* $(,)?) => {
+        /// The design's icons, rasterized once from the bundled SVGs. They are
+        /// drawn in white and tinted when painted.
+        #[derive(Clone)]
+        pub(crate) struct IconTextures {
+            $(pub(crate) $field: TextureHandle,)*
+        }
 
-#[derive(Clone)]
-pub(crate) struct IconTextures {
-    pub(crate) music: egui::TextureHandle,
-    pub(crate) play: egui::TextureHandle,
-    pub(crate) pause: egui::TextureHandle,
-    pub(crate) previous: egui::TextureHandle,
-    pub(crate) next: egui::TextureHandle,
+        impl IconTextures {
+            pub(crate) fn load(ctx: &egui::Context) -> Result<Self, String> {
+                Ok(Self {
+                    $($field: load(ctx, $file, include_bytes!(concat!("../assets/icons/", $file)))?,)*
+                })
+            }
+        }
+    };
 }
 
-impl IconTextures {
-    pub(crate) fn load(ctx: &egui::Context) -> Result<Self, String> {
-        let load = |name: &str, bytes: &[u8]| {
-            egui_extras::image::load_svg_bytes(bytes)
-                .map(|image| ctx.load_texture(name, image, egui::TextureOptions::LINEAR))
-        };
-        Ok(Self {
-            music: load("musikpl-music", MUSIC_ICON)?,
-            play: load("musikpl-play", PLAY_ICON)?,
-            pause: load("musikpl-pause", PAUSE_ICON)?,
-            previous: load("musikpl-previous", PREVIOUS_ICON)?,
-            next: load("musikpl-next", NEXT_ICON)?,
-        })
+icon_files! {
+    music => "music.svg",
+    play => "play.svg",
+    pause => "pause.svg",
+    previous => "previous.svg",
+    next => "next.svg",
+    menu => "menu.svg",
+    queue => "queue.svg",
+    settings => "settings.svg",
+    close => "close.svg",
+    minimize => "minimize.svg",
+    add => "add.svg",
+    added => "added.svg",
+    check_box => "check_box.svg",
+    check_box_off => "check_box_off.svg",
+}
+
+fn load(ctx: &egui::Context, name: &str, bytes: &[u8]) -> Result<TextureHandle, String> {
+    // Rasterize above display size so icons stay sharp at any rem scale, and
+    // keep mipmaps so shrinking them to button size stays smooth.
+    egui_extras::image::load_svg_bytes_with_size(bytes, Some(SizeHint::Height(128)))
+        .map(|image| ctx.load_texture(name, image, SMOOTH))
+}
+
+/// Linear filtering with mipmaps: textures drawn much smaller than their
+/// pixel size (icons, cover thumbnails) keep clean edges.
+pub(crate) const SMOOTH: egui::TextureOptions = egui::TextureOptions {
+    mipmap_mode: Some(egui::TextureFilter::Linear),
+    ..egui::TextureOptions::LINEAR
+};
+
+/// Paint `texture` centered in `rect`, as large as fits without distortion.
+pub(crate) fn paint_icon(
+    painter: &egui::Painter,
+    texture: &TextureHandle,
+    rect: Rect,
+    tint: Color32,
+) {
+    let size = texture.size_vec2();
+    if size.x <= 0.0 || size.y <= 0.0 {
+        return;
     }
-}
-
-pub(crate) fn design_icon(texture: &egui::TextureHandle, size: f32) -> egui::Image<'static> {
-    egui::Image::from_texture((texture.id(), egui::vec2(size, size)))
-        .fit_to_exact_size(egui::vec2(size, size))
-        .tint(Theme::default().accent)
-}
-
-pub(crate) fn icon_button(
-    ui: &mut egui::Ui,
-    texture: &egui::TextureHandle,
-    size: f32,
-    button_size: egui::Vec2,
-    tooltip: &str,
-) -> egui::Response {
-    ui.add_sized(button_size, egui::Button::image(design_icon(texture, size)))
-        .on_hover_text(tooltip)
+    let scale = (rect.width() / size.x).min(rect.height() / size.y);
+    let target = Rect::from_center_size(rect.center(), size * scale);
+    painter.image(
+        texture.id(),
+        target,
+        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+        tint,
+    );
 }

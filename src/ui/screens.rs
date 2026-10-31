@@ -1,415 +1,307 @@
+//! The main area: search results as a grid of cover cards, plus the error
+//! toast that floats above it.
+
+use eframe::egui::{
+    self, pos2, vec2, Align2, Color32, CursorIcon, Id, Order, Rect, Sense, Stroke, Ui,
+};
+
 use crate::{
-    domain::Track,
+    domain::{CoverArt, Track},
     theme::Theme,
     ui::{
-        apply_text_sizes,
-        icons::{icon_button, IconTextures},
-        layout::queue_row_columns,
+        fonts,
+        icons::{paint_icon, IconTextures},
+        layout::grid_columns,
         responsive::ResponsiveUi,
+        widgets::{self, elided, hover_amount, item_id, mix, pointer_amount},
     },
 };
-use eframe::egui;
 
 #[derive(Debug)]
-pub(crate) enum HomeAction {
-    PlaySearch(Track),
-    AddToQueue(Track),
-}
-
-#[derive(Debug)]
-pub(crate) enum QueueAction {
+pub(crate) enum ResultAction {
     Play(Track),
-    Remove(usize),
+    AddToMix(Track),
 }
 
-pub(crate) fn show_header(
-    ctx: &egui::Context,
-    header_height: f32,
-    search: &mut String,
-    responsive: &ResponsiveUi,
-) -> bool {
-    let mut search_clicked = false;
-    egui::TopBottomPanel::top("app_header")
-        .exact_height(header_height)
-        .frame(
-            egui::Frame::none()
-                .fill(egui::Color32::BLACK)
-                .inner_margin(responsive.rem(0.625)),
-        )
-        .show(ctx, |ui| {
-            apply_text_sizes(ui, responsive);
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                let gap = responsive.rem(1.25);
-                let search_margin = egui::vec2(responsive.rem(0.5), responsive.rem(0.1875));
-                let button_padding = egui::vec2(responsive.rem(0.8125), responsive.rem(0.4375));
-                ui.spacing_mut().item_spacing.x = gap;
-                ui.spacing_mut().button_padding = button_padding;
-                let visuals = ui.visuals_mut();
-                visuals.extreme_bg_color = SEARCH_BOX_FILL;
-                let rounding = egui::Rounding::same(responsive.rem(0.5));
-                visuals.widgets.inactive.rounding = rounding;
-                visuals.widgets.hovered.rounding = rounding;
-                visuals.widgets.active.rounding = rounding;
-
-                // The button keeps its content width; the search box takes the
-                // rest of the row up to its design width, and the pair is centered.
-                let button_width =
-                    text_width(ui, "Search", egui::TextStyle::Button.resolve(ui.style()))
-                        + button_padding.x * 2.0;
-                let available = ui.available_width();
-                let search_width = (available - gap - button_width)
-                    .min(responsive.rem(59.0))
-                    .max(0.0);
-                ui.add_space(((available - search_width - gap - button_width) / 2.0).max(0.0));
-
-                let response = ui.add(
-                    egui::TextEdit::singleline(search)
-                        .hint_text("Search YouTube")
-                        .margin(egui::Margin::symmetric(search_margin.x, search_margin.y))
-                        .desired_width((search_width - search_margin.x * 2.0).max(0.0)),
-                );
-                search_clicked = ui
-                    .add(
-                        egui::Button::new("Search")
-                            .fill(SEARCH_BUTTON_FILL)
-                            .rounding(responsive.rem(1.25)),
-                    )
-                    .clicked();
-                if response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
-                    search_clicked = true;
-                }
-            });
-        });
-    search_clicked
+pub(crate) struct ResultsView<'a> {
+    pub(crate) results: &'a [Track],
+    /// The query the results are for.
+    pub(crate) query: &'a str,
+    pub(crate) searching: bool,
+    /// Jam guests request songs from the host instead of playing them.
+    pub(crate) guest: bool,
+    pub(crate) covers: &'a CoverArt,
+    pub(crate) in_mix: &'a dyn Fn(&str) -> bool,
 }
-pub(crate) fn show_home(
-    ctx: &egui::Context,
+
+pub(crate) fn show_results(
+    ui: &mut Ui,
+    area: Rect,
+    view: &ResultsView<'_>,
     icons: &IconTextures,
-    current: Option<&Track>,
-    results: &[Track],
-    guest: bool,
-    responsive: &ResponsiveUi,
-) -> Vec<HomeAction> {
+    r: &ResponsiveUi,
+) -> Vec<ResultAction> {
     let theme = Theme::default();
     let mut actions = Vec::new();
-
-    egui::CentralPanel::default().show(ctx, |ui| {
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(area), |ui| {
+        if view.results.is_empty() {
+            empty_state(ui, area, view, &theme, r);
+            return;
+        }
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 egui::Frame::none()
-                    .fill(theme.surface)
-                    .rounding(responsive.space_md.clamp(8.0, 14.0))
-                    .inner_margin(egui::Margin::symmetric(
-                        responsive.space_lg.clamp(16.0, 24.0),
-                        responsive.space_xl.clamp(20.0, 28.0),
-                    ))
+                    .inner_margin(egui::Margin::same(r.rem(1.5)))
                     .show(ui, |ui| {
-                        ui.label(
-                            egui::RichText::new("NOW PLAYING")
-                                .size(responsive.font_heading)
-                                .color(theme.accent),
-                        );
-                        ui.add_space(responsive.space_md);
-                        ui.horizontal(|ui| {
-                            egui::Frame::none()
-                                .fill(theme.raised)
-                                .rounding(responsive.space_sm)
-                                .inner_margin(egui::Margin::same(responsive.space_lg))
-                                .show(ui, |ui| {
-                                    ui.add(
-                                        egui::Image::from_texture((
-                                            icons.music.id(),
-                                            egui::vec2(
-                                                responsive.artwork_size * 0.67,
-                                                responsive.artwork_size,
-                                            ),
-                                        ))
-                                        .fit_to_exact_size(egui::vec2(
-                                            responsive.artwork_size * 0.67,
-                                            responsive.artwork_size,
-                                        ))
-                                        .tint(theme.accent),
-                                    );
-                                });
-                            ui.vertical(|ui| {
-                                if let Some(track) = current {
-                                    ui.label(
-                                        egui::RichText::new(&track.title)
-                                            .size(responsive.font_title)
-                                            .color(theme.text),
-                                    );
-                                    ui.label(
-                                        egui::RichText::new(&track.channel)
-                                            .size(responsive.font_body)
-                                            .color(theme.secondary_text),
-                                    );
-                                    ui.add_space(responsive.space_sm);
-                                    ui.small(
-                                        egui::RichText::new("Audio only playback")
-                                            .size(responsive.font_caption)
-                                            .color(theme.secondary_text),
-                                    );
-                                } else {
-                                    ui.label(
-                                        egui::RichText::new("Choose something to play")
-                                            .size(responsive.font_title)
-                                            .color(theme.text),
-                                    );
-                                    ui.label(
-                                        egui::RichText::new("Search YouTube to start your mix")
-                                            .size(responsive.font_body)
-                                            .color(theme.secondary_text),
-                                    );
-                                }
-                            });
-                        });
+                        header(ui, view, &theme, r);
+                        ui.add_space(r.rem(1.25));
+                        grid(ui, view, icons, &theme, r, &mut actions);
                     });
-
-                ui.add_space(responsive.space_lg);
-                ui.label(
-                    egui::RichText::new("SEARCH RESULTS")
-                        .size(responsive.font_caption)
-                        .color(theme.text),
-                );
-                if results.is_empty() {
-                    ui.small(
-                        egui::RichText::new(
-                            "Search for a song, artist, album, or YouTube URL to begin.",
-                        )
-                        .size(responsive.font_caption)
-                        .color(theme.secondary_text),
-                    );
-                }
-                for track in results {
-                    egui::Frame::none()
-                        .fill(theme.surface)
-                        .rounding(responsive.space_sm)
-                        .inner_margin(responsive.space_sm)
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                // A Jam guest cannot start playback; the
-                                // button on the right sends a request instead.
-                                if !guest
-                                    && icon_button(
-                                        ui,
-                                        &icons.play,
-                                        responsive.icon_size,
-                                        egui::vec2(
-                                            responsive.rem(3.0).clamp(42.0, 54.0),
-                                            responsive.control_height,
-                                        ),
-                                        "Play",
-                                    )
-                                    .clicked()
-                                {
-                                    actions.push(HomeAction::PlaySearch(track.clone()));
-                                }
-                                ui.vertical(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(&track.title)
-                                            .size(responsive.font_body)
-                                            .color(theme.text),
-                                    );
-                                    ui.small(
-                                        egui::RichText::new(format!(
-                                            "{} · {}",
-                                            track.channel,
-                                            track.duration_text()
-                                        ))
-                                        .size(responsive.font_caption)
-                                        .color(theme.secondary_text),
-                                    );
-                                });
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        if ui
-                                            .add_sized(
-                                                [
-                                                    responsive.rem(4.5).clamp(64.0, 80.0),
-                                                    responsive.control_height,
-                                                ],
-                                                egui::Button::new(if guest {
-                                                    "Request"
-                                                } else {
-                                                    "Add to mix"
-                                                })
-                                                .fill(theme.accent),
-                                            )
-                                            .clicked()
-                                        {
-                                            actions.push(HomeAction::AddToQueue(track.clone()));
-                                        }
-                                    },
-                                );
-                            });
-                        });
-                }
             });
     });
-
     actions
 }
 
-pub(crate) fn show_queue_panel(
-    ctx: &egui::Context,
-    queue_width: f32,
-    auto_mix: bool,
-    queue: &[Track],
-    responsive: &ResponsiveUi,
-) -> Vec<QueueAction> {
-    let theme = Theme::default();
-    let mut actions = Vec::new();
+fn header(ui: &mut Ui, view: &ResultsView<'_>, theme: &Theme, r: &ResponsiveUi) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = r.rem(0.75);
+        ui.label(
+            egui::RichText::new(format!("Results for “{}”", view.query))
+                .font(fonts::display(r.rem(1.75)))
+                .color(theme.text),
+        );
+        let count = view.results.len();
+        ui.label(
+            egui::RichText::new(format!("{count} song{}", if count == 1 { "" } else { "s" }))
+                .font(fonts::body(r.rem(0.9375)))
+                .color(theme.secondary_text),
+        );
+        if view.searching {
+            widgets::spinner(ui, r.rem(1.125));
+        }
+    });
+}
 
-    egui::SidePanel::right("app_queue")
-        .resizable(false)
-        .exact_width(queue_width)
-        .frame(
-            egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin {
-                left: responsive.rem(0.3125),
-                right: responsive.rem(0.4375),
-                top: responsive.rem(1.0625),
-                bottom: responsive.rem(0.625),
-            }),
-        )
-        .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("UP NEXT")
-                        .size(responsive.font_body)
-                        .color(theme.text),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        egui::RichText::new(if auto_mix { "MIX ON" } else { "MANUAL" })
-                            .size(responsive.font_caption)
-                            .color(theme.accent),
-                    );
-                });
-            });
-            ui.add_space(responsive.rem(0.75));
-            ui.add(egui::Separator::default().spacing(0.0));
-            ui.add_space(responsive.rem(0.5));
-            if queue.is_empty() {
-                ui.small(
-                    egui::RichText::new("Your mix will appear here as songs are added.")
-                        .size(responsive.font_caption)
-                        .color(theme.secondary_text),
-                );
-            }
-            let mut remove = None;
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    let row_padding = egui::vec2(responsive.rem(0.5), responsive.rem(0.625));
-                    let row_gap = responsive.rem(0.875);
-                    let button_padding = egui::vec2(responsive.rem(0.5625), responsive.rem(0.1875));
-                    ui.spacing_mut().item_spacing.y = responsive.rem(0.4375);
-                    ui.spacing_mut().button_padding = button_padding;
-                    // Fixed columns are measured from their real content so the
-                    // title is the only part of a row that flexes.
-                    let remove_width =
-                        text_width(ui, "Remove", egui::TextStyle::Button.resolve(ui.style()))
-                            + button_padding.x * 2.0;
-                    let list_width = ui.available_width();
-                    for (index, track) in queue.iter().enumerate() {
-                        let index_text = format!("{:02}", index + 1);
-                        let index_width = text_width(
-                            ui,
-                            &index_text,
-                            egui::FontId::proportional(responsive.font_body),
-                        );
-                        let columns = queue_row_columns(
-                            list_width - row_padding.x * 2.0,
-                            index_width,
-                            remove_width,
-                            row_gap,
-                        );
-                        // The row hugs its content; a long title wraps inside
-                        // `columns.title` and makes the row taller instead of wider.
-                        egui::Frame::none()
-                            .fill(QUEUE_ROW_FILL)
-                            .rounding(responsive.rem(0.5))
-                            .inner_margin(egui::Margin::symmetric(row_padding.x, row_padding.y))
-                            .show(ui, |ui| {
-                                ui.horizontal_top(|ui| {
-                                    ui.spacing_mut().item_spacing.x = row_gap;
-                                    ui.label(
-                                        egui::RichText::new(index_text)
-                                            .size(responsive.font_body)
-                                            .color(theme.accent),
-                                    );
-                                    ui.vertical(|ui| {
-                                        ui.set_max_width(columns.title);
-                                        // A wrapping title fills the row, like a
-                                        // stretched flex item, so the card spans the list.
-                                        let title_font =
-                                            egui::FontId::proportional(responsive.font_body);
-                                        if text_width(ui, &track.title, title_font) > columns.title
-                                        {
-                                            ui.set_min_width(columns.title);
-                                        }
-                                        ui.spacing_mut().item_spacing.y = responsive.rem(0.5);
-                                        if ui
-                                            .add(
-                                                egui::Label::new(
-                                                    egui::RichText::new(&track.title)
-                                                        .size(responsive.font_body)
-                                                        .color(theme.text),
-                                                )
-                                                .wrap()
-                                                .sense(egui::Sense::click()),
-                                            )
-                                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                            .clicked()
-                                        {
-                                            actions.push(QueueAction::Play(track.clone()));
-                                        }
-                                        ui.add(
-                                            egui::Label::new(
-                                                egui::RichText::new(format!(
-                                                    "{} · {}",
-                                                    track.channel,
-                                                    track.duration_text()
-                                                ))
-                                                .size(responsive.font_caption)
-                                                .color(theme.secondary_text),
-                                            )
-                                            .wrap(),
-                                        );
-                                    });
-                                    if ui
-                                        .add(
-                                            egui::Button::new("Remove")
-                                                .fill(QUEUE_REMOVE_FILL)
-                                                .rounding(responsive.rem(0.3125)),
-                                        )
-                                        .clicked()
-                                    {
-                                        remove = Some(index);
-                                    }
-                                });
-                            });
-                    }
-                });
-            if let Some(index) = remove {
-                actions.push(QueueAction::Remove(index));
+fn grid(
+    ui: &mut Ui,
+    view: &ResultsView<'_>,
+    icons: &IconTextures,
+    theme: &Theme,
+    r: &ResponsiveUi,
+    actions: &mut Vec<ResultAction>,
+) {
+    let card = vec2(r.rem(11.4375), r.rem(15.3125));
+    let gap = r.rem(1.0);
+    let columns = grid_columns(ui.available_width(), card.x, gap);
+    ui.spacing_mut().item_spacing = vec2(gap, gap);
+    for row in view.results.chunks(columns) {
+        ui.horizontal(|ui| {
+            for track in row {
+                result_card(ui, card, track, view, icons, theme, r, actions);
             }
         });
-
-    actions
+    }
 }
 
-// Header and queue card colors from the design.
-const SEARCH_BOX_FILL: egui::Color32 = egui::Color32::from_rgb(0x29, 0x27, 0x2D);
-const SEARCH_BUTTON_FILL: egui::Color32 = egui::Color32::from_rgb(0x25, 0x23, 0x2A);
-const QUEUE_ROW_FILL: egui::Color32 = egui::Color32::from_rgb(0x1C, 0x1B, 0x1F);
-const QUEUE_REMOVE_FILL: egui::Color32 = egui::Color32::from_rgb(0x34, 0x31, 0x39);
+#[allow(clippy::too_many_arguments)]
+fn result_card(
+    ui: &mut Ui,
+    size: egui::Vec2,
+    track: &Track,
+    view: &ResultsView<'_>,
+    icons: &IconTextures,
+    theme: &Theme,
+    r: &ResponsiveUi,
+    actions: &mut Vec<ResultAction>,
+) {
+    let (rect, card) = ui.allocate_exact_size(size, Sense::click());
+    let hover = pointer_amount(ui, &card);
+    let rounding = r.rem(0.625);
+    ui.painter().rect(
+        rect,
+        rounding,
+        mix(theme.panel, Color32::from_rgb(24, 24, 24), hover),
+        Stroke::new(1.0_f32, mix(theme.border, theme.hover, hover)),
+    );
 
-fn text_width(ui: &egui::Ui, text: &str, font: egui::FontId) -> f32 {
-    ui.painter()
-        .layout_no_wrap(text.to_owned(), font, egui::Color32::PLACEHOLDER)
-        .size()
-        .x
+    let inner = rect.shrink(r.rem(0.75));
+    let cover_rect = Rect::from_min_size(inner.min, egui::Vec2::splat(inner.width()));
+    widgets::cover(
+        ui,
+        cover_rect,
+        view.covers.cover_for(track).as_ref(),
+        icons,
+        r.rem(0.5),
+    );
+
+    let title_rect = Rect::from_min_size(
+        pos2(inner.left(), cover_rect.bottom() + r.rem(0.625)),
+        vec2(inner.width(), r.rem(1.75)),
+    );
+    elided(
+        ui.painter(),
+        title_rect,
+        &track.title,
+        fonts::display(r.rem(1.125)),
+        theme.text,
+        Align2::LEFT_CENTER,
+    );
+    let author_rect = title_rect.translate(vec2(0.0, title_rect.height()));
+    let author_rect = Rect::from_min_size(author_rect.min, vec2(inner.width(), r.rem(1.375)));
+    elided(
+        ui.painter(),
+        author_rect,
+        &track.channel,
+        fonts::body(r.rem(0.875)),
+        theme.secondary_text,
+        Align2::LEFT_CENTER,
+    );
+
+    // + Add to mix, on the cover's bottom-right corner.
+    let button_size = r.rem(2.0);
+    let button_rect = Rect::from_min_size(
+        cover_rect.max - egui::Vec2::splat(button_size + r.rem(0.5)),
+        egui::Vec2::splat(button_size),
+    );
+    let added = !view.guest && (view.in_mix)(&track.id);
+    let add = ui.interact(
+        button_rect,
+        item_id("add_to_mix", &track.id),
+        Sense::click(),
+    );
+    let add_hover = hover_amount(ui, &add);
+    let light = if added { 1.0 } else { add_hover };
+    let painter = ui.painter();
+    painter.circle(
+        button_rect.center(),
+        button_size / 2.0,
+        mix(Color32::from_black_alpha(178), theme.text, light),
+        Stroke::new(1.0_f32, Color32::from_white_alpha(38)),
+    );
+    paint_icon(
+        painter,
+        if added { &icons.added } else { &icons.add },
+        Rect::from_center_size(button_rect.center(), r.rem2(1.0, 1.0)),
+        mix(theme.text, Color32::BLACK, light),
+    );
+    let tooltip = match (view.guest, added) {
+        (true, _) => "Request from the host",
+        (false, true) => "In your mix",
+        (false, false) => "Add to mix",
+    };
+    if add
+        .on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text(tooltip)
+        .clicked()
+    {
+        if !added {
+            actions.push(ResultAction::AddToMix(track.clone()));
+        }
+    } else if card
+        .on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text(if view.guest {
+            "Request from the host"
+        } else {
+            "Play"
+        })
+        .clicked()
+    {
+        actions.push(ResultAction::Play(track.clone()));
+    }
+}
+
+fn empty_state(ui: &mut Ui, area: Rect, view: &ResultsView<'_>, theme: &Theme, r: &ResponsiveUi) {
+    let (title, detail) = if view.searching {
+        (
+            format!("Searching for “{}”…", view.query),
+            "Looking on YouTube".to_owned(),
+        )
+    } else if view.query.is_empty() {
+        (
+            "Search for music".to_owned(),
+            "Type a song, artist, album, or YouTube link above and press Enter.".to_owned(),
+        )
+    } else {
+        (
+            format!("No results for “{}”", view.query),
+            "Try another search.".to_owned(),
+        )
+    };
+    let center = area.center();
+    let painter = ui.painter();
+    painter.text(
+        center - vec2(0.0, r.rem(1.0)),
+        Align2::CENTER_CENTER,
+        title,
+        fonts::display(r.rem(2.0)),
+        theme.text,
+    );
+    painter.text(
+        center + vec2(0.0, r.rem(1.25)),
+        Align2::CENTER_CENTER,
+        detail,
+        fonts::body(r.rem(1.0)),
+        theme.secondary_text,
+    );
+    if view.searching {
+        let spinner = Rect::from_center_size(center + vec2(0.0, r.rem(3.5)), r.rem2(1.5, 1.5));
+        ui.put(spinner, |ui: &mut Ui| widgets::spinner(ui, r.rem(1.5)));
+    }
+}
+
+/// A dismissable error card at the bottom-left of the main area. Returns
+/// true when the user closed it.
+pub(crate) fn error_toast(
+    ctx: &egui::Context,
+    main: Rect,
+    message: &str,
+    icons: &IconTextures,
+    r: &ResponsiveUi,
+) -> bool {
+    let theme = Theme::default();
+    let width = r.rem(26.0).min(main.width() - r.rem(3.0));
+    let font = fonts::body(r.rem(0.9375));
+    egui::Area::new(Id::new("error_toast"))
+        .order(Order::Foreground)
+        .fixed_pos(pos2(main.left() + r.rem(1.5), main.bottom() - r.rem(1.5)))
+        .pivot(Align2::LEFT_BOTTOM)
+        .show(ctx, |ui| {
+            let frame = egui::Frame::none()
+                .fill(theme.panel)
+                .stroke(Stroke::new(1.0_f32, theme.danger))
+                .rounding(r.rem(0.75))
+                .inner_margin(egui::Margin::symmetric(r.rem(1.0), r.rem(0.75)));
+            let mut closed = false;
+            frame.show(ui, |ui| {
+                ui.set_width(width);
+                ui.horizontal_top(|ui| {
+                    let button = r.rem(1.75);
+                    let gap = r.rem(0.75);
+                    ui.spacing_mut().item_spacing.x = gap;
+                    ui.allocate_ui(vec2(width - button - gap, 0.0), |ui| {
+                        ui.set_width(width - button - gap);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(message)
+                                    .font(font.clone())
+                                    .color(theme.text),
+                            )
+                            .wrap(),
+                        );
+                    });
+                    let close = widgets::icon_button(
+                        ui,
+                        &icons.close,
+                        vec2(button, button),
+                        r.rem2(0.875, 0.875),
+                        button / 2.0,
+                        widgets::ButtonColors::round(&theme),
+                    );
+                    closed = close.on_hover_text("Dismiss").clicked();
+                });
+            });
+            closed
+        })
+        .inner
 }

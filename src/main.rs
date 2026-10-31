@@ -4,6 +4,7 @@ mod app;
 mod domain;
 mod infrastructure;
 mod jam;
+mod lastfm;
 mod media;
 mod playback;
 mod recommendations;

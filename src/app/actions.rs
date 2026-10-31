@@ -1,6 +1,6 @@
 use crate::ui::footer::FooterAction;
 
-use super::YtMusicApp;
+use super::{Overlay, YtMusicApp};
 
 /// Translate presentation-layer footer events into application operations.
 pub(super) fn apply_footer_action(app: &mut YtMusicApp, action: FooterAction) {
@@ -21,5 +21,6 @@ pub(super) fn apply_footer_action(app: &mut YtMusicApp, action: FooterAction) {
             app.player
                 .send(&format!("[\"set_property\",\"volume\",{}]", volume));
         }
+        FooterAction::ToggleQueue => app.toggle_overlay(Overlay::Queue),
     }
 }
