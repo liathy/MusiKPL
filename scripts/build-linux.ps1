@@ -5,6 +5,9 @@
 # run on Ubuntu 20.04 and newer. Downloaded crates and build files are kept
 # in Docker volumes, so later builds are quick. No system libraries are
 # needed to build: the window and graphics libraries are loaded at runtime.
+#
+# -Test also runs the desktop app's and the core's tests on Linux first.
+param([switch]$Test)
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -12,9 +15,13 @@ $root = Split-Path -Parent $PSScriptRoot
 docker info --format '{{.ServerVersion}}' | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Docker is not running. Start Docker Desktop first.' }
 
-$build = @'
+$tests = if ($Test) { 'cargo test --release -p MusiKPL -p musikpl-core' } else { 'true' }
+$build = @"
 set -e
+$tests
 cargo build --release -p MusiKPL
+"@ + @'
+
 mkdir -p /src/dist
 cp /build/target/release/MusiKPL /src/dist/MusiKPL-linux-x86_64
 '@

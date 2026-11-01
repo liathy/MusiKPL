@@ -1283,9 +1283,7 @@ fn rand_seed() -> u64 {
 
 /// The name other devices see for this one: the computer name only.
 fn device_name() -> String {
-    let name = std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .unwrap_or_default();
+    let name = crate::platform::device_name().unwrap_or_default();
     let name = sanitize_text(&name, MAX_NAME_CHARS);
     if name.is_empty() {
         "MusiKPL".into()

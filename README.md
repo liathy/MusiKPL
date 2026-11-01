@@ -1,11 +1,11 @@
 # MusiKPL 🎵
 
-**A lightweight desktop music player built with Rust, powered by YouTube audio streaming.**
+**A lightweight music player for Windows, Linux and Android, built with Rust, powered by YouTube audio streaming.**
 
-MusiKPL brings music discovery, queue management, automatic mixes, synchronized listening with friends, and Last.fm scrobbling into a clean, minimalist desktop application that ships as a single `MusiKPL.exe`.
+MusiKPL brings music discovery, queue management, automatic mixes, synchronized listening with friends, and Last.fm scrobbling into a clean, minimalist app: a single `MusiKPL.exe` on Windows, one binary on Linux, and an Android app.
 
 <p align="center">
-  <strong>Rust · egui · mpv · yt-dlp</strong>
+  <strong>Rust · egui · mpv · yt-dlp · Jetpack Compose · ExoPlayer</strong>
 </p>
 
 ---
@@ -17,13 +17,14 @@ MusiKPL brings music discovery, queue management, automatic mixes, synchronized 
 - **YouTube Music Search** — Search for songs, artists, or albums, or paste a YouTube link. Songs appear as a grid of up to 20 cover cards, with matching **artists** (and a **person**, when you type an exact Last.fm username) above them. If YouTube's search answers nothing, MusiKPL tries again and then asks YouTube Music; if that still finds nothing, it lists the songs **Last.fm** knows, and each one is found on YouTube when you play it. The search box remembers your recent searches.
 - **Artist Pages** — Open any artist for their photo, listeners, genres, bio, top songs (play them, or use **+** to like them, add them to the mix or to a playlist) and similar artists. Click the artist's name in the player bar to open their page: MusiKPL picks the most listened Last.fm artist matching the YouTube name, since Last.fm has many with similar names. **Bookmark** artists to keep them in the menu: they get their own Home rows ("From …", "Similar to …") and Auto Mix favours them.
 - **Audio Streaming** — Best-quality audio resolved with `yt-dlp` and played with `mpv`. When YouTube won't play a video (age-restricted, blocked in your country, removed, or with no playable stream), MusiKPL plays another upload of the same song instead, and otherwise tells you why in plain words.
-- **Playback Controls** — Play, pause, skip tracks, seek through songs, and adjust volume.
+- **Playback Controls** — Play, pause, skip tracks, seek through songs, and adjust volume. Drag (or swipe) the song's cover left for the next song, right for the previous one.
+- **Shuffle, Smart Shuffle and Repeat** — The buttons beside the player's controls. Shuffle plays your playlist or queue in a random order (off puts the order back); **Smart Shuffle** also mixes in recommended songs that fit, about one in four; **Repeat** starts the playlist over (or the songs you played), or plays one song again.
 - **Cover Art** — Each song's YouTube cover, cropped square; it loads straight away and never changes.
-- **Playlists** — Create playlists from the menu, add songs with **+** (or right-click) on any song, the queue, or the player bar, and drag songs to reorder them. Give a playlist your own cover photo, ♥ it to show it on Home, and get **Recommended songs** based on what's already in it. Deleting needs a 3-second hold, so it never happens by accident.
+- **Playlists** — Create playlists from the menu, add songs with **+** (or right-click) on any song, the queue, or the player bar, and drag songs to reorder them. Give a playlist your own cover photo (move and zoom it to fit the square), ♥ it to show it on Home, and get **Recommended songs** based on what's already in it. Deleting needs a 3-second hold, so it never happens by accident.
 - **Like Songs** — Choose ♥ Like from a song's **+** menu, or press ♥ in the player bar or the queue.
 - **Smooth Song Changes** — The next song in the queue is prepared in the background while the current one plays, so it starts right away.
 - **Every Language** — Titles in Japanese, Chinese, Korean, Russian, Arabic, Thai, Hindi and more show properly, using the system's own fonts, loaded only when a title needs them.
-- **Windows and Linux** — A Windows installer and portable exe, and a Linux binary for Ubuntu and other desktops.
+- **Windows, Linux and Android** — A Windows installer and portable exe, a Linux binary for Ubuntu and other desktops, and an Android app: background playback with lock-screen and headset controls, Home, search, playlists, Last.fm, Jams and friends, all from the same engine as the desktop.
 - **Docked Menu and Queue** — The menu (left) and queue (right) open beside the music instead of over it, so you can keep browsing and playing with them open.
 - **Picks Up Where You Left Off** — Your volume, Auto Mix choice, queue, and last song are remembered. The last song waits, paused, where you stopped; nothing loads until you press play.
 - **Auto Mix** — On by default; switch it in **Settings → General**. Keeps the queue filled with songs like the one playing, leaning toward your taste: songs you keep skipping are left out and your favorite artists move up. It refills in the background before the queue runs out, falls back to the artist's songs when YouTube has no Mix, retries when a search fails, and skips songs you've already heard. Songs you add with **+** play first and are kept when you start a new mix.
@@ -31,7 +32,7 @@ MusiKPL brings music discovery, queue management, automatic mixes, synchronized 
 - **Internet Jam** — Invite friends anywhere with a copy-paste invite: no account, no port forwarding. Connections are end-to-end encrypted, and only people with the invite can join.
 - **Shared Jam Queue** — Everyone in a Jam sees the host's queue, and guests add songs to it with **+**. The host controls playback and is the only one who can remove songs.
 - **Last.fm** — Connect in one click (or create an account) from **Settings → Last.fm**. MusiKPL scrobbles what you play, ♥ loves songs on your Last.fm profile too, and shows your **profile** from the menu: scrobbles, top artists and songs for any period, and recent plays.
-- **Friends** — Add friends from their Last.fm profile, swap friend codes once, and see who has MusiKPL open. Friends show their Last.fm profile picture. Invite online friends to the Jam you're hosting in one click; their invite shows as a pop-up (or quietly in the menu, your choice in Settings). Peer-to-peer and encrypted, with no server; only people on your friends list can reach you.
+- **Friends** — The people you follow on Last.fm are your friends on every device (PC and phone); add someone from their profile and press Follow on Last.fm. Swap friend codes once to see who has MusiKPL open. Friends show their Last.fm profile picture. Invite online friends to the Jam you're hosting in one click; their invite shows as a pop-up (or quietly in the menu, your choice in Settings). Peer-to-peer and encrypted, with no server; only people on your friends list can reach you.
 - **Start with Windows** and **Close to tray** — Optional, from Settings. With close to tray, ✕ hides MusiKPL next to the clock and the music keeps playing.
 - **Updates Built In** — Open the menu and press **Check for updates** at the bottom. When a new release is out, **Install update** downloads it, restarts MusiKPL on the new version, and keeps all your data. GitHub's address is looked up through Cloudflare's 1.1.1.1 (over HTTPS), so an internet provider blocking GitHub by DNS doesn't stop updates.
 - **Back and Forward** — Move between pages like in a browser: the ‹ › buttons beside Home, your mouse's side buttons (back and forward), or Alt+← / Alt+→.
@@ -55,7 +56,9 @@ From the latest [**GitHub Release**](https://github.com/liathy/MusiKPL/releases)
 - **`MusiKPL-Setup.exe`** (recommended) — installs MusiKPL for your Windows account only, with no administrator rights, into `%LOCALAPPDATA%\Programs\MusiKPL`. You choose whether to add Start menu and Desktop shortcuts. It appears in **Settings → Apps → Installed apps**, where you can uninstall it; the uninstaller asks whether to delete your data too (it keeps it unless you tick the box).
 - **`MusiKPL.exe`** — the portable app: run it from anywhere, no install.
 
-Both update themselves from the menu's **Check for updates**. Your data is never touched by installing, updating, or reinstalling. If MusiKPL is open when you run the setup, the setup closes it first (it saves everything as it closes).
+- **`MusiKPL-android-arm64.apk`** — the Android app (Android 8 or newer). Open it on the phone and allow installing from your browser or file manager when Android asks.
+
+All of them update themselves (the Windows apps from the menu's **Check for updates**, Android from **Settings → Updates**, which also offers a new version when MusiKPL starts). Your data is never touched by installing, updating, or reinstalling. If MusiKPL is open when you run the setup, the setup closes it first (it saves everything as it closes).
 
 ### Linux (Ubuntu and others)
 
@@ -71,7 +74,7 @@ Optional extras: `sudo apt install zenity` to choose playlist cover photos, and 
 
 ### Requirements
 
-- **Windows 10/11** or **64-bit Linux**.
+- **Windows 10/11**, **64-bit Linux**, or **Android 8+** (64-bit phones).
 - **Internet connection** — Required for searching and streaming online music.
 
 `mpv` and `yt-dlp` are bundled inside `MusiKPL.exe`. On first launch they are unpacked once to `%LOCALAPPDATA%\MusiKPL\tools` and reused afterwards; a newer MusiKPL release replaces them. The unpacked `yt-dlp` updates itself weekly, because YouTube changes often. To use your own versions instead, place `mpv.exe` and/or `yt-dlp.exe` next to `MusiKPL.exe`.

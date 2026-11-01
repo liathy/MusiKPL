@@ -18,11 +18,13 @@ use std::{
 use musikpl_core::{
     audio::{AudioOutput, PositionSample},
     domain::{song_info, PlaylistTarget, Track},
-    engine::{Engine, LastFmConnect, SongIntent, View},
+    engine::{AppError, Engine, LastFmConnect, SongIntent, View, NOTICE_DURATION},
     extractor::Extractor,
+    jam::{DiscoveryStatus, Progress, Role},
     lastfm::{browse::Period, built_in_keys},
     platform::{self, Platform},
     recommendations::home::STARTER_GENRES,
+    settings::{RepeatMode, ShuffleMode},
     storage,
 };
 
@@ -243,6 +245,23 @@ pub struct PlayerState {
     pub can_go_forward: bool,
     /// Something went wrong (shown until dismissed).
     pub error: Option<String>,
+    pub shuffle: Shuffle,
+    pub repeat: Repeat,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum Shuffle {
+    Off,
+    On,
+    /// Shuffled, with recommended songs mixed in.
+    Smart,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum Repeat {
+    Off,
+    All,
+    One,
 }
 
 #[derive(Clone, Debug, uniffi::Record)]
@@ -272,6 +291,8 @@ pub struct HomeState {
 pub struct ArtistHit {
     pub name: String,
     pub listeners: u64,
+    /// Their photo (found on YouTube), once looked up.
+    pub photo: Option<String>,
 }
 
 #[derive(Clone, Debug, uniffi::Record)]
@@ -305,6 +326,8 @@ pub struct SearchState {
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct QueueState {
     pub songs: Vec<Song>,
+    /// Songs Smart Shuffle added (marked in the queue).
+    pub smart: Vec<String>,
     /// Auto Mix is looking for more.
     pub mixing: bool,
     pub auto_mix: bool,
@@ -504,6 +527,16 @@ impl MobileEngine {
             can_go_back: engine.nav.can_back(),
             can_go_forward: engine.nav.can_forward(),
             error: engine.error.as_ref().map(ToString::to_string),
+            shuffle: match engine.settings.shuffle {
+                ShuffleMode::Off => Shuffle::Off,
+                ShuffleMode::On => Shuffle::On,
+                ShuffleMode::Smart => Shuffle::Smart,
+            },
+            repeat: match engine.settings.repeat {
+                RepeatMode::Off => Repeat::Off,
+                RepeatMode::All => Repeat::All,
+                RepeatMode::One => Repeat::One,
+            },
         }
     }
 
@@ -533,20 +566,27 @@ impl MobileEngine {
     }
 
     pub fn search_state(&self) -> SearchState {
-        let engine = self.engine();
+        let mut engine = self.engine();
+        let hits: Vec<(String, u64)> = engine
+            .browse
+            .artists
+            .iter()
+            .take(8)
+            .map(|artist| (artist.name.clone(), artist.listeners))
+            .collect();
+        let artists = hits
+            .into_iter()
+            .map(|(name, listeners)| ArtistHit {
+                photo: engine.artist_image(&name).map(|cover| cover.url),
+                name,
+                listeners,
+            })
+            .collect();
         SearchState {
             query: engine.results_query.clone(),
             searching: engine.searching,
             songs: songs(&engine.results),
-            artists: engine
-                .browse
-                .artists
-                .iter()
-                .map(|artist| ArtistHit {
-                    name: artist.name.clone(),
-                    listeners: artist.listeners,
-                })
-                .collect(),
+            artists,
             people: engine
                 .browse
                 .people
@@ -580,6 +620,11 @@ impl MobileEngine {
             engine.queue.iter().cloned().collect()
         };
         QueueState {
+            smart: tracks
+                .iter()
+                .filter(|track| engine.is_smart_pick(&track.id))
+                .map(|track| track.id.clone())
+                .collect(),
             songs: songs(&tracks),
             mixing: engine.automix.busy(),
             auto_mix: engine.auto_mix,
@@ -666,7 +711,11 @@ impl MobileEngine {
                 state.similar = page
                     .similar
                     .into_iter()
-                    .map(|name| ArtistHit { name, listeners: 0 })
+                    .map(|name| ArtistHit {
+                        name,
+                        listeners: 0,
+                        photo: None,
+                    })
                     .collect();
                 state.url = page.url;
             }
@@ -677,7 +726,15 @@ impl MobileEngine {
     }
 
     pub fn profile(&self) -> ProfileState {
-        let engine = self.engine();
+        let mut engine = self.engine();
+        let top: Vec<String> = match &engine.browse.profile {
+            Some(Ok(profile)) => profile.top_artists.iter().map(|a| a.name.clone()).collect(),
+            _ => Vec::new(),
+        };
+        let photos: Vec<Option<String>> = top
+            .iter()
+            .map(|name| engine.artist_image(name).map(|cover| cover.url))
+            .collect();
         let is_me = engine.browse.profile_user.is_empty() || engine.profile_is_mine();
         let user = if !is_me {
             engine.browse.profile_user.clone()
@@ -721,9 +778,11 @@ impl MobileEngine {
                 state.top_artists = profile
                     .top_artists
                     .iter()
-                    .map(|artist| ArtistHit {
+                    .zip(photos)
+                    .map(|(artist, photo)| ArtistHit {
                         name: artist.name.clone(),
                         listeners: artist.listeners,
+                        photo,
                     })
                     .collect();
                 state.top_songs = profile.top_tracks.iter().map(song).collect();
@@ -983,8 +1042,24 @@ impl MobileEngine {
         }
     }
 
-    pub fn play_playlist(&self, id: i64, index: u32) {
+    /// Play a playlist: from the start, or a random song with shuffle on.
+    pub fn play_playlist(&self, id: i64) {
+        self.engine().play_playlist(id as u64);
+    }
+
+    /// Play a playlist from one of its songs.
+    pub fn play_playlist_from(&self, id: i64, index: u32) {
         self.engine().play_playlist_from(id as u64, index as usize);
+    }
+
+    /// The shuffle button: off, on, smart.
+    pub fn cycle_shuffle(&self) {
+        self.engine().cycle_shuffle();
+    }
+
+    /// The repeat button: off, all, one.
+    pub fn cycle_repeat(&self) {
+        self.engine().cycle_repeat();
     }
 
     pub fn more_playlist_suggestions(&self) {
@@ -1003,7 +1078,10 @@ impl MobileEngine {
                 self.engine().set_playlist_cover(id as u64, name);
                 None
             }
-            Err(error) => Some(error),
+            Err(error) => {
+                self.engine().error = Some(AppError::Ui(error.clone()));
+                Some(error)
+            }
         }
     }
 
@@ -1099,6 +1177,396 @@ impl MobileEngine {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Jams and friends
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum JamRole {
+    None,
+    Host,
+    Guest,
+}
+
+/// A Jam hosted nearby (same Wi-Fi), ready to join.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct NearbyJam {
+    pub session_id: u64,
+    pub host: String,
+    pub track: Option<String>,
+    pub listeners: u32,
+}
+
+#[derive(Clone, Debug, uniffi::Enum)]
+pub enum InternetShare {
+    Off,
+    Preparing,
+    /// The invite to send (end-to-end encrypted; only people with it join).
+    Ready {
+        invite: String,
+    },
+    Failed {
+        reason: String,
+    },
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct JamState {
+    pub role: JamRole,
+    /// Guest: still connecting to the host.
+    pub connecting: bool,
+    /// Host: guests listening.
+    pub listeners: u32,
+    /// Guest: the host's name. Host: this device's.
+    pub host_name: String,
+    pub status: String,
+    pub notice: Option<String>,
+    /// Host: a new song waits for the guests to load it.
+    pub waiting_for_guests: bool,
+    pub internet: InternetShare,
+    pub nearby: Vec<NearbyJam>,
+    /// Why nearby Jams can't be found, if they can't.
+    pub discovery_problem: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum FriendStatus {
+    Online,
+    Offline,
+    /// Not checked yet.
+    Unknown,
+    /// Added from Last.fm; no friend code yet, so not seen online.
+    NoCode,
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct FriendItem {
+    pub index: u32,
+    /// Their friend code's key (also the id of their Jam invites).
+    pub id: Option<String>,
+    pub name: String,
+    pub lastfm: Option<String>,
+    pub avatar: Option<String>,
+    pub status: FriendStatus,
+    /// They invited us to their Jam.
+    pub invited_us: bool,
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct FriendInvite {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct FriendsState {
+    pub friends: Vec<FriendItem>,
+    /// This device hosts a Jam, so online friends can be invited.
+    pub hosting: bool,
+    pub notice: Option<String>,
+    /// Jam invites waiting for Join or Not now.
+    pub invites: Vec<FriendInvite>,
+    /// Invites show as a pop-up (else quietly in the list).
+    pub invite_popups: bool,
+}
+
+#[uniffi::export]
+impl MobileEngine {
+    pub fn jam(&self) -> JamState {
+        let mut engine = self.engine();
+        if engine
+            .jam_notice
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() > NOTICE_DURATION)
+        {
+            engine.jam_notice = None;
+        }
+        let info = &engine.jam.info;
+        let role = match info.role {
+            None => JamRole::None,
+            Some(Role::Host) => JamRole::Host,
+            Some(Role::Guest) => JamRole::Guest,
+        };
+        let guest = role == JamRole::Guest;
+        JamState {
+            role,
+            connecting: info.connecting,
+            listeners: info.peers as u32,
+            host_name: info.host_name.clone(),
+            status: if guest && !info.connecting {
+                engine.jam_sync.status.clone()
+            } else {
+                info.status.clone()
+            },
+            notice: engine
+                .jam_notice
+                .as_ref()
+                .map(|(text, _)| text.clone())
+                .or_else(|| info.notice.clone()),
+            waiting_for_guests: role == JamRole::Host && engine.jam_hold.is_some(),
+            internet: match engine.jam.internet_status() {
+                None => InternetShare::Off,
+                Some(Progress::Preparing) => InternetShare::Preparing,
+                Some(Progress::Ready(invite)) => InternetShare::Ready { invite },
+                Some(Progress::Failed(reason)) => InternetShare::Failed { reason },
+            },
+            nearby: engine
+                .jam
+                .nearby()
+                .into_iter()
+                .map(|jam| NearbyJam {
+                    session_id: jam.session_id,
+                    host: jam.host_name,
+                    track: jam.track,
+                    listeners: jam.listeners,
+                })
+                .collect(),
+            discovery_problem: match engine.jam.discovery_status() {
+                DiscoveryStatus::Unavailable(reason) => Some(reason),
+                _ => None,
+            },
+        }
+    }
+
+    /// Host a Jam on this Wi-Fi (share it over the internet afterwards).
+    pub fn start_jam(&self) {
+        let mut engine = self.engine();
+        engine.jam_notice = None;
+        if let Err(error) = engine.jam.host() {
+            engine.error = Some(AppError::Jam(error));
+        }
+    }
+
+    /// Leave (or, hosting, end) the Jam.
+    pub fn end_jam(&self) {
+        let mut engine = self.engine();
+        if engine.is_guest() {
+            engine.release_guest_playback();
+        }
+        engine.jam_notice = None;
+        engine.jam.leave();
+    }
+
+    pub fn join_nearby_jam(&self, session_id: u64) {
+        let mut engine = self.engine();
+        let found = engine
+            .jam
+            .nearby()
+            .into_iter()
+            .find(|jam| jam.session_id == session_id);
+        if let Some(jam) = found {
+            engine.jam_notice = None;
+            engine.error = None;
+            engine.jam.join_nearby(&jam);
+        }
+    }
+
+    /// Host: make an internet invite (end-to-end encrypted).
+    pub fn share_jam_over_internet(&self) {
+        self.engine().jam.share_over_internet();
+    }
+
+    /// Join a Jam over the internet with a pasted invite. An error says why
+    /// it couldn't.
+    pub fn join_jam_invite(&self, invite: String) -> Option<String> {
+        let mut engine = self.engine();
+        match engine.jam.join_invite(invite.trim()) {
+            Ok(()) => {
+                engine.jam_notice = None;
+                engine.error = None;
+                None
+            }
+            Err(error) => Some(error),
+        }
+    }
+
+    pub fn friends(&self) -> FriendsState {
+        let engine = self.engine();
+        let state = &engine.friends;
+        let friends = state
+            .list
+            .iter()
+            .enumerate()
+            .map(|(index, friend)| FriendItem {
+                index: index as u32,
+                id: friend.id.clone(),
+                name: friend.name.clone(),
+                lastfm: friend.lastfm.clone(),
+                avatar: friend.avatar.clone(),
+                status: match &friend.id {
+                    None => FriendStatus::NoCode,
+                    Some(id) => match state.online.get(id) {
+                        Some(true) => FriendStatus::Online,
+                        Some(false) => FriendStatus::Offline,
+                        None => FriendStatus::Unknown,
+                    },
+                },
+                invited_us: friend
+                    .id
+                    .as_ref()
+                    .is_some_and(|id| state.invites.iter().any(|invite| &invite.id == id)),
+            })
+            .collect();
+        FriendsState {
+            friends,
+            hosting: engine.jam.info.role == Some(Role::Host),
+            notice: state.notice().map(str::to_owned),
+            invites: state
+                .invites
+                .iter()
+                .map(|invite| FriendInvite {
+                    id: invite.id.clone(),
+                    name: invite.name.clone(),
+                })
+                .collect(),
+            invite_popups: engine.settings.invite_popups,
+        }
+    }
+
+    /// The friends list is on screen: check who's online more often.
+    pub fn set_friends_visible(&self, visible: bool) {
+        let mut engine = self.engine();
+        engine.menu_visible = visible;
+        if visible {
+            engine.refresh_friends();
+            engine.refresh_follows();
+        }
+    }
+
+    /// Put this device's friend code on the clipboard.
+    pub fn copy_friend_code(&self) {
+        let mut engine = self.engine();
+        engine.clipboard = Some(engine.my_friend_code());
+        engine.set_friend_notice("Your friend code is copied. Send it to a friend.");
+    }
+
+    /// Add a friend's code (it completes a Last.fm friend with that name).
+    pub fn add_friend_code(&self, code: String) {
+        let mut engine = self.engine();
+        engine.friends.code_input = code;
+        engine.add_friend_code();
+    }
+
+    pub fn remove_friend(&self, index: u32) {
+        self.engine().remove_friend(index as usize);
+    }
+
+    pub fn invite_friend(&self, index: u32) {
+        let mut engine = self.engine();
+        let id = engine
+            .friends
+            .list
+            .get(index as usize)
+            .and_then(|friend| friend.id.clone());
+        if let Some(id) = id {
+            engine.invite_friend(&id);
+        }
+    }
+
+    /// Join the Jam a friend invited us to. True when joining started.
+    pub fn accept_friend_invite(&self, id: String) -> bool {
+        self.engine().accept_invite(&id)
+    }
+
+    pub fn decline_friend_invite(&self, id: String) {
+        self.engine().decline_invite(&id);
+    }
+
+    /// Add a Last.fm user as a friend (their profile's Add friend).
+    pub fn add_lastfm_friend(&self, user: String) {
+        self.engine().add_lastfm_friend(&user);
+    }
+
+    pub fn remove_lastfm_friend(&self, user: String) {
+        self.engine().remove_lastfm_friend(&user);
+    }
+}
+
+/// The device's name as its owner knows it ("Galaxy A56"): Jams and
+/// friends show it.
+#[uniffi::export]
+pub fn set_device_name(name: String) {
+    platform::set_device_name(&name);
+}
+
+/// The phone's networks ("192.168.1.67/24"), for finding Jams nearby.
+#[uniffi::export]
+pub fn set_networks(networks: Vec<String>) {
+    let parsed = networks
+        .iter()
+        .filter_map(|network| {
+            let (ip, prefix) = network.split_once('/')?;
+            Some((ip.parse().ok()?, prefix.parse().ok()?))
+        })
+        .collect();
+    musikpl_core::net::set_networks(parsed);
+}
+
+// ---------------------------------------------------------------------------
+// Updates
+// ---------------------------------------------------------------------------
+
+/// The Android release file.
+const APK_ASSET: &str = "MusiKPL-android-arm64.apk";
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct Update {
+    pub version: String,
+    pub url: String,
+}
+
+/// Ask GitHub (found through Cloudflare's 1.1.1.1) for a newer MusiKPL.
+/// None when this is the latest, or the release has no Android app.
+#[uniffi::export]
+pub fn check_for_update() -> Result<Option<Update>, MobileError> {
+    let release =
+        musikpl_core::updates::check().map_err(|reason| MobileError::Failed { reason })?;
+    Ok(release.and_then(|release| {
+        release.asset(APK_ASSET).map(|url| Update {
+            version: release.version,
+            url,
+        })
+    }))
+}
+
+/// Download progress, in per-mille.
+#[uniffi::export(with_foreign)]
+pub trait DownloadProgress: Send + Sync {
+    fn progress(&self, per_mille: u32);
+}
+
+/// Download an update to `path` (through Cloudflare's DNS too). Blocks
+/// until done; call it off the main thread.
+#[uniffi::export]
+pub fn download_update(
+    url: String,
+    path: String,
+    progress: Arc<dyn DownloadProgress>,
+) -> Result<(), MobileError> {
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    let done = Arc::new(AtomicBool::new(false));
+    let amount = Arc::new(AtomicU32::new(0));
+    let watcher = {
+        let (done, amount) = (done.clone(), amount.clone());
+        std::thread::spawn(move || {
+            while !done.load(Ordering::Relaxed) {
+                progress.progress(amount.load(Ordering::Relaxed));
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            progress.progress(amount.load(Ordering::Relaxed));
+        })
+    };
+    let result = musikpl_core::updates::download(&url, std::path::Path::new(&path), &amount);
+    done.store(true, Ordering::Relaxed);
+    let _ = watcher.join();
+    result.map_err(|reason| MobileError::Failed { reason })
+}
+
+/// This build's version ("3.5.0").
+#[uniffi::export]
+pub fn app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_owned()
+}
 #[cfg(test)]
 mod tests {
     use super::*;

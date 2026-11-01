@@ -29,13 +29,18 @@ android {
 
     signingConfigs {
         create("release") {
-            // The release key lives outside the repository (see 06-build-and-release.md).
+            // The release key lives outside the repository: in
+            // %LOCALAPPDATA%\MusiKPL (or where MUSIKPL_KEYSTORE says).
+            val folder = File(System.getenv("LOCALAPPDATA") ?: "", "MusiKPL")
             val keystore = System.getenv("MUSIKPL_KEYSTORE")?.let(::File)
-            if (keystore != null && keystore.exists()) {
+                ?: File(folder, "musikpl-android-release.jks")
+            val password = System.getenv("MUSIKPL_KEYSTORE_PASSWORD")
+                ?: File(folder, "android-keystore-password.txt").takeIf { it.exists() }?.readText()?.trim()
+            if (keystore.exists() && password != null) {
                 storeFile = keystore
-                storePassword = System.getenv("MUSIKPL_KEYSTORE_PASSWORD")
+                storePassword = password
                 keyAlias = "musikpl"
-                keyPassword = System.getenv("MUSIKPL_KEYSTORE_PASSWORD")
+                keyPassword = password
             }
         }
     }

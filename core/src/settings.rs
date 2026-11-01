@@ -26,6 +26,52 @@ pub struct Settings {
     pub close_to_tray: bool,
     /// Friends' Jam invites pop up (else they wait in the Friends card).
     pub invite_popups: bool,
+    pub shuffle: ShuffleMode,
+    pub repeat: RepeatMode,
+}
+
+/// The order songs play in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShuffleMode {
+    #[default]
+    Off,
+    /// Random order.
+    On,
+    /// Random order, with recommended songs that fit mixed in.
+    Smart,
+}
+
+impl ShuffleMode {
+    /// The next mode for the shuffle button: off, on, smart, off.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Off => Self::On,
+            Self::On => Self::Smart,
+            Self::Smart => Self::Off,
+        }
+    }
+}
+
+/// What happens when the songs run out, or one ends.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RepeatMode {
+    #[default]
+    Off,
+    /// Start the playlist (or the songs played) over.
+    All,
+    /// Play the same song again.
+    One,
+}
+
+impl RepeatMode {
+    /// The next mode for the repeat button: off, all, one, off.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Off => Self::All,
+            Self::All => Self::One,
+            Self::One => Self::Off,
+        }
+    }
 }
 
 impl Default for Settings {
@@ -40,6 +86,8 @@ impl Default for Settings {
             onboarded: false,
             close_to_tray: false,
             invite_popups: true,
+            shuffle: ShuffleMode::Off,
+            repeat: RepeatMode::Off,
         }
     }
 }

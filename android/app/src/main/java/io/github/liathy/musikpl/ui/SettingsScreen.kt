@@ -32,6 +32,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.liathy.musikpl.core.Core
+import io.github.liathy.musikpl.update.UpdateState
+import io.github.liathy.musikpl.update.Updater
 
 @Composable
 fun SettingsScreen(nav: Nav) {
@@ -97,6 +99,38 @@ fun SettingsScreen(nav: Nav) {
                 "Keeps the queue filled with songs like the one playing.",
                 state.autoMix,
             ) { enabled -> Core.act { setAutoMix(enabled) } }
+            Spacer(Modifier.size(12.dp))
+            Toggle(
+                "Jam invites as pop-ups",
+                "Off: friends' invites wait quietly on the Jam tab.",
+                state.invitePopups,
+            ) { enabled -> Core.act { setInvitePopups(enabled) } }
+        }
+
+        Card("Updates") {
+            val update by Updater.state.collectAsStateWithLifecycle()
+            when (val current = update) {
+                UpdateState.Idle, UpdateState.UpToDate, is UpdateState.Failed -> {
+                    Text(
+                        when (current) {
+                            UpdateState.UpToDate -> "MusiKPL is up to date."
+                            is UpdateState.Failed -> current.reason
+                            else -> "New versions come from MusiKPL's GitHub releases."
+                        },
+                        color = if (current is UpdateState.Failed) Palette.danger else Palette.secondary,
+                    )
+                    Spacer(Modifier.size(8.dp))
+                    Pill("Check for updates", { Updater.check() }, primary = false)
+                }
+                UpdateState.Checking -> Text("Checking…", color = Palette.secondary)
+                is UpdateState.Available -> {
+                    Text("MusiKPL ${current.update.version} is available.")
+                    Spacer(Modifier.size(8.dp))
+                    Pill("Install update", { Updater.install(context, current.update) })
+                }
+                is UpdateState.Downloading -> Text("Downloading update… ${current.percent}%", color = Palette.secondary)
+                UpdateState.Installing -> Text("Installing… confirm on the screen Android shows.", color = Palette.secondary)
+            }
         }
 
         Card("Your taste") {

@@ -7,5 +7,6 @@ class MusiKPLApp : Application() {
     override fun onCreate() {
         super.onCreate()
         Core.init(this)
+        io.github.liathy.musikpl.update.Updater.check(quiet = true)
     }
 }

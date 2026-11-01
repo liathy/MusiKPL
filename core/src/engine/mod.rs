@@ -16,6 +16,7 @@ mod navigation;
 mod playlist_recs;
 mod playlists;
 mod settings;
+mod shuffle;
 
 pub use automix::AutoMix;
 pub use errors::AppError;
@@ -28,6 +29,7 @@ pub use navigation::{Navigation, Page};
 pub use playlist_recs::PlaylistRecs;
 pub use playlists::playlist_cover;
 pub use settings::LastFmConnect;
+pub use shuffle::PlayOrder;
 
 use std::{
     sync::{
@@ -163,6 +165,8 @@ pub struct Engine {
     pub stale_images: Vec<String>,
     /// Back and forward between pages.
     pub nav: Navigation,
+    /// Shuffle, Smart Shuffle and Repeat.
+    pub order: PlayOrder,
 }
 
 /// An extractor for an engine that hasn't got one (tests, and before the
@@ -242,6 +246,7 @@ impl Engine {
             cover_art: CoverArt,
             stale_images: Vec::new(),
             nav: Navigation::default(),
+            order: PlayOrder::default(),
         }
     }
 
@@ -278,6 +283,7 @@ impl Engine {
         self.handle_finished_track();
         self.poll_mix();
         self.keep_mix_filled();
+        self.keep_smart_shuffle();
     }
 
     /// Search for what the search box holds.
@@ -309,6 +315,7 @@ impl Engine {
         }
         self.reset_mix();
         self.failed_plays = 0;
+        self.start_song_context(&track);
         self.start_track(track, true);
     }
 
@@ -420,6 +427,13 @@ impl Engine {
             self.play_queue_track(track);
             return;
         }
+        // Repeat all: what's being listened to starts over.
+        if self.repeat_context() {
+            if let Some(track) = self.queue.pop_next() {
+                self.play_queue_track(track);
+                return;
+            }
+        }
         self.player.stop();
         self.resume_at = None;
         self.play_rx = None;
@@ -495,6 +509,7 @@ impl Engine {
             }
             match result {
                 Ok((track, url, remember_current)) => {
+                    self.note_played(&track);
                     if remember_current {
                         if let Some(old) = self.current.replace(track.clone()) {
                             self.history.push(old);
@@ -528,6 +543,13 @@ impl Engine {
             return;
         }
         self.finished_handled = true;
+        // Repeat one: the same song again.
+        if self.settings.repeat == crate::settings::RepeatMode::One {
+            if let Some(track) = self.current.clone() {
+                self.start_track(track, false);
+                return;
+            }
+        }
         self.next();
     }
 
@@ -564,6 +586,7 @@ impl Engine {
             || self.playlist_recs.loading()
             || self.browse.busy()
             || self.library.building_home()
+            || self.order.busy()
     }
 
     /// How long until the next tick is needed when nothing animates.

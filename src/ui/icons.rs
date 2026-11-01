@@ -52,6 +52,10 @@ icon_files! {
     artist => "artist.svg",
     back => "back.svg",
     forward => "forward.svg",
+    shuffle => "shuffle.svg",
+    shuffle_smart => "shuffle_smart.svg",
+    repeat => "repeat.svg",
+    repeat_one => "repeat_one.svg",
 }
 
 fn load(ctx: &egui::Context, name: &str, bytes: &[u8]) -> Result<TextureHandle, String> {

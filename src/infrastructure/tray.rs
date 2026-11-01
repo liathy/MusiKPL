@@ -6,6 +6,8 @@
 //! because a minimized window keeps getting frames: playback, Auto Mix and
 //! Jams keep running while it sits in the tray.
 
+// The tray exists on Windows only.
+#[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TrayEvent {
     Show,

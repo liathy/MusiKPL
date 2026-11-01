@@ -49,7 +49,7 @@ impl AutoMix {
 impl Engine {
     /// Everything that must not be picked again: what plays, what is queued,
     /// and what was played.
-    fn mix_exclusions(&self) -> Exclusions {
+    pub fn mix_exclusions(&self) -> Exclusions {
         let mut exclusions = Exclusions::default();
         let tracks = self
             .current
@@ -130,6 +130,10 @@ impl Engine {
     /// Called every frame: start a refill when the queue runs low.
     pub fn keep_mix_filled(&mut self) {
         if self.is_guest() || !self.auto_mix || self.automix.busy() {
+            return;
+        }
+        // Repeating: the same songs come back instead of new ones.
+        if self.settings.repeat != crate::settings::RepeatMode::Off {
             return;
         }
         if self.automix.retry_at.is_some_and(|at| Instant::now() < at) {

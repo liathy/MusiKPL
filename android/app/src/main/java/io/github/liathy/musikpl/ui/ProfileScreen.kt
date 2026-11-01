@@ -60,9 +60,18 @@ fun ProfileScreen(nav: Nav) {
                         color = Palette.secondary,
                     )
                 }
-                if (state.url.startsWith("https://")) {
-                    Spacer(Modifier.size(10.dp))
-                    Pill("Open on Last.fm", { Core.act { openLink(state.url) } }, primary = false)
+                Spacer(Modifier.size(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (!state.isMe) {
+                        if (state.isFriend) {
+                            Pill("✓ Friend", { Core.act { removeLastfmFriend(state.user) } }, primary = false)
+                        } else {
+                            Pill("Add friend", { Core.act { addLastfmFriend(state.user) } })
+                        }
+                    }
+                    if (state.url.startsWith("https://")) {
+                        Pill("Open on Last.fm", { Core.act { openLink(state.url) } }, primary = false)
+                    }
                 }
             }
         }
@@ -92,7 +101,7 @@ fun ProfileScreen(nav: Nav) {
                             Modifier.width(96.dp).clickable { nav.artist(artist.name) },
                             horizontalAlignment = Alignment.CenterHorizontally,
                         ) {
-                            RoundPhoto(null, artist.name, Modifier.size(84.dp))
+                            RoundPhoto(artist.photo, artist.name, Modifier.size(84.dp))
                             Spacer(Modifier.size(6.dp))
                             ScrollingText(artist.name, MaterialTheme.typography.titleMedium)
                             Text("${compact(artist.listeners)} plays", style = MaterialTheme.typography.bodySmall, color = Palette.secondary)

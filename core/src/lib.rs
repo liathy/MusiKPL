@@ -21,3 +21,4 @@ pub mod playback;
 pub mod recommendations;
 pub mod settings;
 pub mod storage;
+pub mod updates;

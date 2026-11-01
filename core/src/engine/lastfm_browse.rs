@@ -311,6 +311,13 @@ impl Engine {
                     self.browse.artists = result.unwrap_or_default();
                 }
             }
+            LastFmEvent::Following { user, result } => {
+                if user.eq_ignore_ascii_case(&self.settings.lastfm.username) {
+                    if let Ok(followed) = result {
+                        self.receive_follows(followed);
+                    }
+                }
+            }
             LastFmEvent::Tracks { query, result } => {
                 if query == self.browse.artists_query {
                     self.browse.tracks = result.unwrap_or_default();

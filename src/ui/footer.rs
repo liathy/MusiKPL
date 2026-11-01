@@ -3,6 +3,8 @@
 
 use eframe::egui::{self, pos2, vec2, Align2, CursorIcon, Id, Rect, Sense, Ui};
 
+use musikpl_core::settings::{RepeatMode, ShuffleMode};
+
 use crate::{
     domain::{format_position, Cover, Playlists, Track},
     theme::Theme,
@@ -29,6 +31,10 @@ pub(crate) enum FooterAction {
     ToggleMute,
     /// The artist's name was clicked: open their Last.fm page.
     OpenArtist,
+    /// Shuffle: off, on, smart.
+    CycleShuffle,
+    /// Repeat: off, all, one.
+    CycleRepeat,
 }
 
 pub(crate) struct FooterState<'a> {
@@ -45,6 +51,8 @@ pub(crate) struct FooterState<'a> {
     pub(crate) queue_open: bool,
     pub(crate) liked: bool,
     pub(crate) playlists: &'a Playlists,
+    pub(crate) shuffle: ShuffleMode,
+    pub(crate) repeat: RepeatMode,
 }
 
 pub(crate) fn show(
@@ -82,7 +90,52 @@ fn track_info(
         pos2(content.left(), content.center().y - cover_size / 2.0),
         egui::Vec2::splat(cover_size),
     );
-    widgets::cover(ui, cover_rect, state.cover.as_ref(), icons, r.rem(0.5));
+    // Drag the cover sideways: left for the next song, right for the
+    // previous one. It follows the pointer a little while dragged.
+    let swipe_id = Id::new("footer_cover_swipe");
+    let swipe = ui.interact(
+        cover_rect,
+        swipe_id,
+        if state.track.is_some() && !state.guest {
+            Sense::drag()
+        } else {
+            Sense::hover()
+        },
+    );
+    let limit = r.rem(3.0);
+    let pull = if swipe.dragged() {
+        let pull =
+            ui.input(
+                |input| match (input.pointer.press_origin(), input.pointer.interact_pos()) {
+                    (Some(from), Some(to)) => (to.x - from.x).clamp(-limit, limit),
+                    _ => 0.0,
+                },
+            );
+        ui.data_mut(|data| data.insert_temp(swipe_id, pull));
+        pull
+    } else {
+        0.0
+    };
+    if swipe.drag_stopped() {
+        let pulled: f32 = ui.data(|data| data.get_temp(swipe_id)).unwrap_or(0.0);
+        if pulled <= -limit * 0.6 {
+            actions.push(FooterAction::Next);
+        } else if pulled >= limit * 0.6 {
+            actions.push(FooterAction::Previous);
+        }
+        ui.data_mut(|data| data.remove::<f32>(swipe_id));
+    }
+    let swipe = swipe.on_hover_cursor(CursorIcon::Grab);
+    if state.track.is_some() && !state.guest {
+        swipe.on_hover_text("Drag left for the next song, right for the previous one");
+    }
+    widgets::cover(
+        ui,
+        cover_rect.translate(vec2(pull, 0.0)),
+        state.cover.as_ref(),
+        icons,
+        r.rem(0.5),
+    );
 
     // ♥ Like, at the right of the column.
     let heart_size = r.rem(2.25);
@@ -302,6 +355,81 @@ fn controls(
         Rect::from_center_size(buttons.play.center() + vec2(nudge, 0.0), icon_size),
         widgets::mix(primary.icon, primary.hover_icon, t),
     );
+
+    // Shuffle left of previous, repeat right of next: dim when off, white
+    // with a dot under it when on.
+    let side = r.rem2(2.0, 2.0);
+    let spacing = size.x / 2.0 + r.rem(0.75) + side.x / 2.0;
+    let shuffle_rect = Rect::from_center_size(buttons.previous.center() - vec2(spacing, 0.0), side);
+    let repeat_rect = Rect::from_center_size(buttons.next.center() + vec2(spacing, 0.0), side);
+    let toggles = [
+        (
+            "footer_shuffle",
+            shuffle_rect,
+            state.shuffle != ShuffleMode::Off,
+            if state.shuffle == ShuffleMode::Smart {
+                &icons.shuffle_smart
+            } else {
+                &icons.shuffle
+            },
+            match state.shuffle {
+                ShuffleMode::Off => "Shuffle",
+                ShuffleMode::On => "Shuffle is on · click for Smart Shuffle",
+                ShuffleMode::Smart => {
+                    "Smart Shuffle: recommended songs mixed in · click to turn off"
+                }
+            },
+            FooterAction::CycleShuffle,
+        ),
+        (
+            "footer_repeat",
+            repeat_rect,
+            state.repeat != RepeatMode::Off,
+            if state.repeat == RepeatMode::One {
+                &icons.repeat_one
+            } else {
+                &icons.repeat
+            },
+            match state.repeat {
+                RepeatMode::Off => "Repeat",
+                RepeatMode::All => "Repeating all · click to repeat this song",
+                RepeatMode::One => "Repeating this song · click to turn off",
+            },
+            FooterAction::CycleRepeat,
+        ),
+    ];
+    for (id, rect, on, icon, tip, action) in toggles {
+        let response = button(ui, id, rect);
+        let mut colors = ghost;
+        if enabled {
+            colors.icon = if on { theme.text } else { theme.secondary_text };
+            colors.hover_icon = theme.text;
+        }
+        paint_icon_button(
+            ui,
+            rect,
+            &response,
+            icon,
+            r.rem2(1.25, 1.25),
+            side.x / 2.0,
+            colors,
+        );
+        if on {
+            ui.painter().circle_filled(
+                pos2(rect.center().x, rect.bottom() + r.rem(0.125)),
+                r.rem(0.125),
+                theme.text,
+            );
+        }
+        if enabled
+            && response
+                .on_hover_cursor(CursorIcon::PointingHand)
+                .on_hover_text(tip)
+                .clicked()
+        {
+            actions.push(action);
+        }
+    }
 
     if enabled {
         if previous.on_hover_cursor(CursorIcon::PointingHand).clicked() {

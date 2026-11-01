@@ -14,6 +14,8 @@ pub(super) fn apply_footer_action(app: &mut YtMusicApp, action: FooterAction) {
         FooterAction::Seek(position) => app.seek(position),
         FooterAction::SetVolume(volume) => app.set_volume(volume),
         FooterAction::ToggleMute => app.toggle_mute(),
+        FooterAction::CycleShuffle => app.cycle_shuffle(),
+        FooterAction::CycleRepeat => app.cycle_repeat(),
         FooterAction::OpenArtist => {
             if let Some(track) = app.shown_track().cloned() {
                 app.open_track_artist(&track);

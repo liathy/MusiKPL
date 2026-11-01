@@ -110,6 +110,11 @@ pub enum LastFmEvent {
         name: String,
         result: Result<browse::ArtistPage, String>,
     },
+    /// Who the user follows on Last.fm.
+    Following {
+        user: String,
+        result: Result<Vec<browse::Followed>, String>,
+    },
     /// Songs Last.fm found for a search.
     Tracks {
         query: String,
@@ -160,6 +165,10 @@ pub enum BrowseRequest {
     BestArtist {
         api_key: String,
         names: Vec<String>,
+    },
+    Following {
+        api_key: String,
+        user: String,
     },
     Profile {
         api_key: String,
@@ -217,6 +226,10 @@ impl LastFm {
                 BrowseRequest::BestArtist { api_key, names } => LastFmEvent::Artist {
                     result: browse::best_artist_page(&api_key, &names),
                     name: names.first().cloned().unwrap_or_default(),
+                },
+                BrowseRequest::Following { api_key, user } => LastFmEvent::Following {
+                    result: browse::following(&api_key, &user),
+                    user,
                 },
                 BrowseRequest::Tracks { api_key, query } => LastFmEvent::Tracks {
                     result: browse::search_tracks(&api_key, &query),

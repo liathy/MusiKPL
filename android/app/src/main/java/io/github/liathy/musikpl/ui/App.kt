@@ -57,7 +57,7 @@ import uniffi.musikpl_mobile.PlayerState
 import uniffi.musikpl_mobile.Screen
 import uniffi.musikpl_mobile.Song
 
-enum class Tab { Home, Search, Library, Settings }
+enum class Tab { Home, Search, Library, Jam, Settings }
 
 /** What the screens can ask the app to do, besides engine calls. */
 class Nav(
@@ -171,6 +171,7 @@ fun App(onLeave: () -> Unit) {
                     Tab.Home -> HomeScreen(nav)
                     Tab.Search -> SearchScreen(nav)
                     Tab.Library -> LibraryScreen(nav)
+                    Tab.Jam -> JamScreen(nav)
                     Tab.Settings -> SettingsScreen(nav)
                 }
             }
@@ -180,6 +181,8 @@ fun App(onLeave: () -> Unit) {
     if (playerOpen) {
         PlayerSheet(nav, onClose = { playerOpen = false })
     }
+    InvitePopup()
+    UpdatePrompt()
     menuSong?.let { song -> SongMenu(song, nav, onClose = { menuSong = null }) }
     menuLastFm?.let { (artist, title) ->
         LastFmMenu(artist, title, onClose = { menuLastFm = null })
@@ -200,6 +203,7 @@ private fun BottomTabs(tab: Tab, detail: Boolean, nav: Nav) {
             Triple(Tab.Home, R.drawable.ic_home, "Home"),
             Triple(Tab.Search, R.drawable.ic_search, "Search"),
             Triple(Tab.Library, R.drawable.ic_playlist, "Library"),
+            Triple(Tab.Jam, R.drawable.ic_friends, "Jam"),
             Triple(Tab.Settings, R.drawable.ic_settings, "Settings"),
         ).forEach { (item, icon, label) ->
             NavigationBarItem(
@@ -225,7 +229,7 @@ private fun MiniPlayer(state: PlayerState, nav: Nav) {
             .clickable { nav.openPlayer() },
     ) {
         Row(
-            Modifier.padding(8.dp),
+            Modifier.swipeSongs(!state.guest).padding(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Cover(song.cover, Modifier.size(44.dp), corner = 6.dp)
@@ -404,5 +408,28 @@ fun NameDialog(title: String, initial: String, onDone: (String) -> Unit, onCance
             TextButton(onClick = { onDone(name) }, enabled = name.isNotBlank()) { Text("Save") }
         },
         dismissButton = { TextButton(onClick = onCancel) { Text("Cancel") } },
+    )
+}
+
+/** A new version was found on start: offer it once. */
+@Composable
+private fun UpdatePrompt() {
+    val update by io.github.liathy.musikpl.update.Updater.state.collectAsStateWithLifecycle()
+    var dismissed by rememberSaveable { mutableStateOf(false) }
+    val context = LocalContext.current
+    val available = update as? io.github.liathy.musikpl.update.UpdateState.Available ?: return
+    if (dismissed) return
+    AlertDialog(
+        onDismissRequest = { dismissed = true },
+        containerColor = Palette.panel,
+        title = { Text("MusiKPL ${available.update.version} is out", style = MaterialTheme.typography.titleLarge) },
+        text = { Text("Update now? Your playlists, likes and settings stay.", color = Palette.secondary) },
+        confirmButton = {
+            TextButton(onClick = {
+                dismissed = true
+                io.github.liathy.musikpl.update.Updater.install(context, available.update)
+            }) { Text("Update", color = Color.White) }
+        },
+        dismissButton = { TextButton(onClick = { dismissed = true }) { Text("Later") } },
     )
 }

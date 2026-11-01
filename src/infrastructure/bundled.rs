@@ -47,7 +47,7 @@ pub(crate) fn tools_dir() -> Option<PathBuf> {
     }
     #[cfg(not(windows))]
     {
-        super::storage::data_dir().map(|dir| dir.join("tools"))
+        musikpl_core::storage::data_dir().map(|dir| dir.join("tools"))
     }
 }
 

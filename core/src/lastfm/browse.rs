@@ -378,6 +378,38 @@ pub fn profile(api_key: &str, user: &str, period: Period) -> Result<Profile, Str
     Ok(profile)
 }
 
+/// Someone the user follows on Last.fm.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Followed {
+    pub name: String,
+    pub image: Option<String>,
+}
+
+/// The people `user` follows on Last.fm (Last.fm calls them friends).
+pub fn following(api_key: &str, user: &str) -> Result<Vec<Followed>, String> {
+    let value = call(
+        "user.getFriends",
+        api_key,
+        vec![("user", user.into()), ("limit", "200".into())],
+    )?;
+    Ok(parse_following(value.pointer("/friends/user")))
+}
+
+fn parse_following(value: Option<&Value>) -> Vec<Followed> {
+    list(value)
+        .into_iter()
+        .map(|user| Followed {
+            name: text(user.get("name")),
+            image: list(user.get("image"))
+                .into_iter()
+                .rev()
+                .map(|image| text(image.get("#text")))
+                .find(|url| url.starts_with("https://")),
+        })
+        .filter(|user| !user.name.is_empty())
+        .collect()
+}
+
 fn parse_user_info(value: &Value) -> Profile {
     let user = value.get("user");
     let field = |path: &str| user.and_then(|user| user.pointer(path));
@@ -492,6 +524,22 @@ mod tests {
         // Nothing alike.
         let names = vec!["Hardwell Official".to_string()];
         assert_eq!(pick_artist(&names, &[hit("Queen", 5)]), None);
+    }
+
+    #[test]
+    fn followed_people_are_read_with_their_pictures() {
+        let value: Value = serde_json::from_str(
+            r##"{"friends":{"user":[
+                {"name":"ana","image":[{"#text":"","size":"small"},{"#text":"https://img/a.png","size":"large"}]},
+                {"name":"","image":[]},
+                {"name":"bia","image":[]}
+            ]}}"##,
+        )
+        .unwrap();
+        let people = parse_following(value.pointer("/friends/user"));
+        assert_eq!(people.len(), 2);
+        assert_eq!(people[0].image.as_deref(), Some("https://img/a.png"));
+        assert_eq!(people[1].image, None);
     }
 
     #[test]

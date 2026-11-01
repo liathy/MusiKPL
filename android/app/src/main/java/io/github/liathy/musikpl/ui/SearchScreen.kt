@@ -107,7 +107,7 @@ fun SearchScreen(nav: Nav) {
                         }
                     }
                     items(state.artists.take(8)) { artist ->
-                        PersonChip(artist.name, null, "${compact(artist.listeners)} listeners") {
+                        PersonChip(artist.name, artist.photo, "${compact(artist.listeners)} listeners") {
                             nav.artist(artist.name)
                         }
                     }

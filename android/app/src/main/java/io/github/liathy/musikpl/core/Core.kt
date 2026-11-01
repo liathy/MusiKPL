@@ -15,8 +15,19 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.Network
+import android.net.wifi.WifiManager
+import android.provider.Settings
+import java.net.Inet4Address
 import uniffi.musikpl_mobile.AndroidPlatform
 import uniffi.musikpl_mobile.ArtistState
+import uniffi.musikpl_mobile.FriendsState
+import uniffi.musikpl_mobile.JamRole
+import uniffi.musikpl_mobile.JamState
+import uniffi.musikpl_mobile.setDeviceName
+import uniffi.musikpl_mobile.setNetworks
 import uniffi.musikpl_mobile.HomeState
 import uniffi.musikpl_mobile.MobileEngine
 import uniffi.musikpl_mobile.PlayerState
@@ -58,6 +69,8 @@ object Core {
     private val _artist = MutableStateFlow<ArtistState?>(null)
     private val _profile = MutableStateFlow<ProfileState?>(null)
     private val _settings = MutableStateFlow<SettingsState?>(null)
+    private val _jam = MutableStateFlow<JamState?>(null)
+    private val _friends = MutableStateFlow<FriendsState?>(null)
 
     val player: StateFlow<PlayerState?> = _player
     val home: StateFlow<HomeState?> = _home
@@ -69,6 +82,18 @@ object Core {
     val artist: StateFlow<ArtistState?> = _artist
     val profile: StateFlow<ProfileState?> = _profile
     val settings: StateFlow<SettingsState?> = _settings
+    val jam: StateFlow<JamState?> = _jam
+    val friends: StateFlow<FriendsState?> = _friends
+
+    /** The Jam screen shows: find nearby Jams (needs the multicast lock). */
+    @Volatile
+    var jamVisible = false
+        set(value) {
+            field = value
+            updateMulticast()
+        }
+
+    private var multicast: WifiManager.MulticastLock? = null
 
     /** The screens are showing: keep their snapshots fresh. */
     @Volatile
@@ -83,6 +108,14 @@ object Core {
 
     fun init(context: Context) {
         app = context.applicationContext
+        // Jams and friends show the phone's own name ("Galaxy A56").
+        val name = Settings.Global.getString(app.contentResolver, "device_name")
+            ?: android.os.Build.MODEL
+        setDeviceName(name)
+        watchNetworks()
+        multicast = app.getSystemService(WifiManager::class.java)
+            ?.createMulticastLock("musikpl-jam")
+            ?.apply { setReferenceCounted(false) }
         audio = ExoAudio(app)
         val extractor = YouTubeExtractor(app)
         engine = MobileEngine(
@@ -141,6 +174,38 @@ object Core {
         _artist.value = engine.artist()
         _profile.value = engine.profile()
         _settings.value = engine.settings()
+        _friends.value = engine.friends()
+        val jam = engine.jam()
+        if (jam.role != _jam.value?.role) main.post { updateMulticast() }
+        _jam.value = jam
+    }
+
+    /** Nearby Jams arrive as broadcasts, which Android drops without a lock. */
+    private fun updateMulticast() {
+        val lock = multicast ?: return
+        val inJam = _jam.value?.role?.let { it != JamRole.NONE } == true
+        if (jamVisible || inJam) {
+            if (!lock.isHeld) lock.acquire()
+        } else if (lock.isHeld) {
+            lock.release()
+        }
+    }
+
+    /** Tell the engine the phone's networks, now and whenever they change. */
+    private fun watchNetworks() {
+        val connectivity = app.getSystemService(ConnectivityManager::class.java) ?: return
+        val publish = { properties: LinkProperties? ->
+            val networks = properties?.linkAddresses.orEmpty()
+                .filter { it.address is Inet4Address && !it.address.isLoopbackAddress }
+                .map { "${it.address.hostAddress}/${it.prefixLength}" }
+            setNetworks(networks)
+        }
+        publish(connectivity.getLinkProperties(connectivity.activeNetwork))
+        connectivity.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
+            override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) {
+                publish(properties)
+            }
+        })
     }
 
     private class Platform : AndroidPlatform {

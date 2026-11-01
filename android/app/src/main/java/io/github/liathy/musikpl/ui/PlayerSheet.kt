@@ -2,7 +2,11 @@
 
 package io.github.liathy.musikpl.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -33,6 +37,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.liathy.musikpl.R
 import io.github.liathy.musikpl.core.Core
+import uniffi.musikpl_mobile.Repeat
+import uniffi.musikpl_mobile.Shuffle
 
 /** The full player: cover, controls, and Up next (the queue). */
 @Composable
@@ -49,7 +55,7 @@ fun PlayerSheet(nav: Nav, onClose: () -> Unit) {
         LazyColumn(contentPadding = PaddingValues(bottom = 32.dp)) {
             item {
                 Column(Modifier.padding(horizontal = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Cover(song?.cover, Modifier.fillMaxWidth().aspectRatio(1f), corner = 14.dp)
+                    Cover(song?.cover, Modifier.fillMaxWidth().aspectRatio(1f).swipeSongs(!state.guest), corner = 14.dp)
                     Spacer(Modifier.size(20.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
@@ -100,6 +106,16 @@ fun PlayerSheet(nav: Nav, onClose: () -> Unit) {
                         horizontalArrangement = Arrangement.SpaceEvenly,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        ModeButton(
+                            icon = if (state.shuffle == Shuffle.SMART) R.drawable.ic_shuffle_smart else R.drawable.ic_shuffle,
+                            label = when (state.shuffle) {
+                                Shuffle.OFF -> "Shuffle"
+                                Shuffle.ON -> "Shuffle on (tap for Smart Shuffle)"
+                                Shuffle.SMART -> "Smart Shuffle (tap to turn off)"
+                            },
+                            on = state.shuffle != Shuffle.OFF,
+                            enabled = !state.guest,
+                        ) { Core.act { cycleShuffle() } }
                         IconAction(R.drawable.ic_previous, "Previous", { Core.act { previous() } }, size = 28.dp)
                         IconAction(
                             if (state.paused || state.loading) R.drawable.ic_play else R.drawable.ic_pause,
@@ -109,6 +125,16 @@ fun PlayerSheet(nav: Nav, onClose: () -> Unit) {
                             size = 36.dp,
                         )
                         IconAction(R.drawable.ic_next, "Next", { Core.act { next() } }, size = 28.dp)
+                        ModeButton(
+                            icon = if (state.repeat == Repeat.ONE) R.drawable.ic_repeat_one else R.drawable.ic_repeat,
+                            label = when (state.repeat) {
+                                Repeat.OFF -> "Repeat"
+                                Repeat.ALL -> "Repeating all (tap to repeat this song)"
+                                Repeat.ONE -> "Repeating this song (tap to turn off)"
+                            },
+                            on = state.repeat != Repeat.OFF,
+                            enabled = !state.guest,
+                        ) { Core.act { cycleRepeat() } }
                     }
                 }
             }
@@ -128,6 +154,14 @@ fun PlayerSheet(nav: Nav, onClose: () -> Unit) {
                 }
             }
             itemsIndexed(songs, key = { _, it -> "queue:" + it.id }) { index, queued ->
+                if (queued.id in queue?.smart.orEmpty()) {
+                    Text(
+                        "✦ Smart Shuffle pick",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Palette.muted,
+                        modifier = Modifier.padding(start = 16.dp, top = 6.dp),
+                    )
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     SongRow(
                         queued,
@@ -141,5 +175,25 @@ fun PlayerSheet(nav: Nav, onClose: () -> Unit) {
                 }
             }
         }
+    }
+}
+
+/** Shuffle or repeat: dim when off, white with a dot under it when on. */
+@Composable
+private fun ModeButton(icon: Int, label: String, on: Boolean, enabled: Boolean, onClick: () -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        IconAction(
+            icon,
+            label,
+            { if (enabled) onClick() },
+            tint = if (on) Color.White else Palette.secondary,
+            size = 24.dp,
+        )
+        Box(
+            Modifier
+                .size(4.dp)
+                .clip(CircleShape)
+                .background(if (on) Color.White else Color.Transparent),
+        )
     }
 }

@@ -23,9 +23,14 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import kotlinx.coroutines.launch
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
@@ -305,4 +310,37 @@ fun compact(count: ULong): String {
         n >= 1e3 -> "%.1fK".format(n / 1e3)
         else -> count.toString()
     }.replace(".0", "")
+}
+
+/**
+ * Swipe the song's cover sideways: left plays the next song, right the
+ * previous one. The cover follows the finger and springs back.
+ */
+@Composable
+fun Modifier.swipeSongs(enabled: Boolean = true): Modifier {
+    val offset = remember { androidx.compose.animation.core.Animatable(0f) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val threshold = with(androidx.compose.ui.platform.LocalDensity.current) { 72.dp.toPx() }
+    return this
+        .graphicsLayer {
+            translationX = offset.value
+            alpha = 1f - (kotlin.math.abs(offset.value) / (threshold * 6)).coerceAtMost(0.4f)
+        }
+        .pointerInput(enabled) {
+            if (!enabled) return@pointerInput
+            detectHorizontalDragGestures(
+                onDragEnd = {
+                    val moved = offset.value
+                    when {
+                        moved < -threshold -> io.github.liathy.musikpl.core.Core.act { next() }
+                        moved > threshold -> io.github.liathy.musikpl.core.Core.act { previous() }
+                    }
+                    scope.launch { offset.animateTo(0f) }
+                },
+                onDragCancel = { scope.launch { offset.animateTo(0f) } },
+            ) { change, amount ->
+                change.consume()
+                scope.launch { offset.snapTo(offset.value + amount) }
+            }
+        }
 }

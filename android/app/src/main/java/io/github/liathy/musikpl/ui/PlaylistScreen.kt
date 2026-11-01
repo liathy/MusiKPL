@@ -2,8 +2,6 @@
 
 package io.github.liathy.musikpl.ui
 
-import android.content.Context
-import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -43,7 +41,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.liathy.musikpl.R
 import io.github.liathy.musikpl.core.Core
-import java.io.File
 import uniffi.musikpl_mobile.Song
 
 @Composable
@@ -57,11 +54,14 @@ fun PlaylistScreen(nav: Nav) {
     var renaming by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf(false) }
     var songMenu by remember { mutableStateOf<Pair<Int, Song>?>(null) }
+    var coverMenu by remember { mutableStateOf(false) }
 
+    // A picked photo waits in the crop step until saved.
+    var cropping by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
     val pickPhoto = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         uri ?: return@rememberLauncherForActivityResult
-        val copy = copyToCache(context, uri) ?: return@rememberLauncherForActivityResult
-        Core.act { setPlaylistCover(playlist.id, copy.absolutePath); copy.delete() }
+        cropping = readPhoto(context, uri)
+        if (cropping == null) Core.act { setPlaylistCover(playlist.id, "") }
     }
 
     val list = rememberLazyListState()
@@ -83,40 +83,50 @@ fun PlaylistScreen(nav: Nav) {
                     Modifier
                         .size(180.dp)
                         .clickable {
-                            pickPhoto.launch(
-                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
-                            )
+                            if (playlist.cover != null) {
+                                coverMenu = true
+                            } else {
+                                pickPhoto.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                                )
+                            }
                         },
                     corner = 12.dp,
                 )
                 Spacer(Modifier.size(12.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    ScrollingText(
-                        playlist.name,
-                        MaterialTheme.typography.headlineMedium,
-                        modifier = Modifier.weight(1f, fill = false),
-                    )
-                    IconAction(R.drawable.ic_edit, "Rename", { renaming = true }, size = 18.dp)
-                }
+                ScrollingText(
+                    playlist.name,
+                    MaterialTheme.typography.headlineMedium,
+                    modifier = Modifier.clickable { renaming = true },
+                )
                 Text(
-                    "${playlist.songs.size} songs",
+                    if (playlist.songs.size == 1) "1 song" else "${playlist.songs.size} songs",
                     style = MaterialTheme.typography.bodyMedium,
                     color = Palette.secondary,
                 )
                 Spacer(Modifier.size(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (playlist.songs.isNotEmpty()) {
-                        Pill("Play", { Core.act { playPlaylist(playlist.id, 0u) } })
+                        Pill("Play", { Core.act { playPlaylist(playlist.id) } })
+                        IconAction(
+                            R.drawable.ic_shuffle,
+                            "Shuffle play",
+                            {
+                                Core.act {
+                                    if (playerState().shuffle == uniffi.musikpl_mobile.Shuffle.OFF) cycleShuffle()
+                                    playPlaylist(playlist.id)
+                                }
+                            },
+                        )
                     }
+                    IconAction(R.drawable.ic_edit, "Rename", { renaming = true }, size = 20.dp)
                     IconAction(
                         if (playlist.favorite) R.drawable.ic_heart_filled else R.drawable.ic_heart,
                         if (playlist.favorite) "Remove from Home" else "Show on Home",
                         { Core.act { togglePlaylistFavorite(playlist.id) } },
                         tint = if (playlist.favorite) Palette.like else Palette.icon,
                     )
-                    if (playlist.cover != null) {
-                        Pill("Remove photo", { Core.act { removePlaylistCover(playlist.id) } }, primary = false)
-                    }
+
                     IconAction(R.drawable.ic_close, "Delete playlist", { deleting = true }, tint = Palette.danger)
                 }
             }
@@ -124,7 +134,7 @@ fun PlaylistScreen(nav: Nav) {
         itemsIndexed(playlist.songs, key = { _, song -> "song:" + song.id }) { index, song ->
             SongRow(
                 song,
-                onPlay = { Core.act { playPlaylist(playlist.id, index.toUInt()) } },
+                onPlay = { Core.act { playPlaylistFrom(playlist.id, index.toUInt()) } },
                 onMore = { songMenu = index to song },
                 playing = player?.song?.id == song.id,
                 liked = song.id in likedIds,
@@ -151,7 +161,7 @@ fun PlaylistScreen(nav: Nav) {
         ModalBottomSheet(onDismissRequest = { songMenu = null }, containerColor = Palette.panel) {
             Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
                 MenuItem(R.drawable.ic_play, "Play from here") {
-                    Core.act { playPlaylist(playlist.id, index.toUInt()) }
+                    Core.act { playPlaylistFrom(playlist.id, index.toUInt()) }
                     songMenu = null
                 }
                 if (index > 0) {
@@ -177,6 +187,34 @@ fun PlaylistScreen(nav: Nav) {
             }
         }
     }
+    if (coverMenu) {
+        ModalBottomSheet(onDismissRequest = { coverMenu = false }, containerColor = Palette.panel) {
+            Column(Modifier.padding(bottom = 24.dp)) {
+                MenuItem(R.drawable.ic_edit, "Choose another photo") {
+                    coverMenu = false
+                    pickPhoto.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                }
+                MenuItem(R.drawable.ic_close, "Remove photo", tint = Palette.danger) {
+                    coverMenu = false
+                    Core.act { removePlaylistCover(playlist.id) }
+                }
+            }
+        }
+    }
+    cropping?.let { photo ->
+        CoverCropDialog(
+            photo,
+            onDone = { square ->
+                cropping = null
+                val file = saveSquare(context, square)
+                Core.act {
+                    setPlaylistCover(playlist.id, file.absolutePath)
+                    file.delete()
+                }
+            },
+            onCancel = { cropping = null },
+        )
+    }
     if (renaming) {
         NameDialog("Rename playlist", playlist.name, onDone = { name ->
             renaming = false
@@ -199,12 +237,3 @@ fun PlaylistScreen(nav: Nav) {
         )
     }
 }
-
-/** The picked photo, copied to a file the core can read. */
-private fun copyToCache(context: Context, uri: Uri): File? = runCatching {
-    val file = File(context.cacheDir, "cover-${System.currentTimeMillis()}")
-    context.contentResolver.openInputStream(uri)!!.use { input ->
-        file.outputStream().use { input.copyTo(it) }
-    }
-    file
-}.getOrNull()

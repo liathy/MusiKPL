@@ -105,14 +105,42 @@ impl Engine {
         let Some(first) = playlist.tracks.get(index).cloned() else {
             return;
         };
-        let rest: Vec<Track> = playlist.tracks[index + 1..].to_vec();
+        let all = playlist.tracks.clone();
+        let shuffled = self.settings.shuffle != crate::settings::ShuffleMode::Off;
+        // Shuffled: every other song, in a random order; else the rest of
+        // the playlist after this one.
+        let mut rest: Vec<Track> = if shuffled {
+            all.iter()
+                .filter(|track| track.id != first.id)
+                .cloned()
+                .collect()
+        } else {
+            all[index + 1..].to_vec()
+        };
+        if shuffled {
+            crate::recommendations::rng::Rng::from_time().shuffle(&mut rest);
+        }
         self.reset_mix();
         self.queue.retain(|_| false);
         for track in rest {
             self.queue.enqueue_unique(track);
         }
+        self.start_playlist_context(all);
         self.failed_plays = 0;
         self.start_track(first, true);
+    }
+
+    /// Play a playlist from the start, or from a random song with shuffle on.
+    pub fn play_playlist(&mut self, id: u64) {
+        let Some(playlist) = self.library.playlists.get(id) else {
+            return;
+        };
+        let index = if self.settings.shuffle == crate::settings::ShuffleMode::Off {
+            0
+        } else {
+            crate::recommendations::rng::Rng::from_time().below(playlist.tracks.len().max(1))
+        };
+        self.play_playlist_from(id, index);
     }
 
     /// The name typed for the open playlist is done: keep it.

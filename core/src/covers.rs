@@ -23,20 +23,52 @@ pub fn cover_uri(file_name: &str) -> Option<String> {
     ))
 }
 
+/// The square of a photo to keep, as fractions of its size: `x` and `y`
+/// from the left and top, `side` of the shorter side (1 = all of it).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Crop {
+    pub x: f32,
+    pub y: f32,
+    pub side: f32,
+}
+
 /// Copy `source` into the covers folder as a centered square JPEG. Returns
 /// the saved file's name. `stem` makes the name unique to the playlist.
 pub fn save_cover(source: &Path, stem: &str) -> Result<String, String> {
-    let image = image::open(source).map_err(|e| format!("Couldn't open that image ({e})"))?;
-    let side = image.width().min(image.height());
-    if side == 0 {
+    save_cover_cropped(source, stem, None)
+}
+
+/// Like [`save_cover`], keeping the square the user chose (the centered
+/// one without a crop).
+pub fn save_cover_cropped(source: &Path, stem: &str, crop: Option<Crop>) -> Result<String, String> {
+    // The format is read from the file, not its name (a picked photo may
+    // come without an extension).
+    let image = image::ImageReader::open(source)
+        .and_then(|reader| reader.with_guessed_format())
+        .map_err(|e| format!("Couldn't open that image ({e})"))?
+        .decode()
+        .map_err(|e| format!("Couldn't read that image ({e})"))?;
+    let shorter = image.width().min(image.height());
+    if shorter == 0 {
         return Err("That image is empty".into());
     }
-    let square = image.crop_imm(
-        (image.width() - side) / 2,
-        (image.height() - side) / 2,
-        side,
-        side,
-    );
+    let (x, y, side) = match crop {
+        Some(crop) => {
+            let side = ((crop.side.clamp(0.01, 1.0) * shorter as f32) as u32).clamp(1, shorter);
+            let x =
+                ((crop.x.clamp(0.0, 1.0) * image.width() as f32) as u32).min(image.width() - side);
+            let y = ((crop.y.clamp(0.0, 1.0) * image.height() as f32) as u32)
+                .min(image.height() - side);
+            (x, y, side)
+        }
+        None => (
+            (image.width() - shorter) / 2,
+            (image.height() - shorter) / 2,
+            shorter,
+        ),
+    };
+    let square = image.crop_imm(x, y, side, side);
+    let side = square.width();
     let small = square
         .resize_exact(
             COVER_SIZE.min(side),
@@ -87,6 +119,40 @@ mod tests {
         delete_cover(&name);
         assert!(!saved.exists());
         delete_cover("../settings.json"); // ignored, not outside the folder
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_chosen_square_is_kept_and_names_dont_matter() {
+        let dir = std::env::temp_dir().join(format!("musikpl-crop-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Left half red, right half blue; saved without an extension.
+        let mut picture = image::RgbImage::new(400, 200);
+        for (x, _, pixel) in picture.enumerate_pixels_mut() {
+            *pixel = if x < 200 {
+                image::Rgb([255, 0, 0])
+            } else {
+                image::Rgb([0, 0, 255])
+            };
+        }
+        let png = dir.join("photo.png");
+        picture.save(&png).unwrap();
+        let source = dir.join("picked-photo");
+        std::fs::rename(&png, &source).unwrap();
+
+        let crop = Crop {
+            x: 0.5,
+            y: 0.0,
+            side: 1.0,
+        };
+        let name = save_cover_cropped(&source, "playlist-2", Some(crop)).expect("saves");
+        let saved = image::open(covers_dir().unwrap().join(&name))
+            .unwrap()
+            .to_rgb8();
+        assert_eq!(saved.width(), 200);
+        let middle = saved.get_pixel(100, 100);
+        assert!(middle[2] > 200 && middle[0] < 60, "the blue half was kept");
+        delete_cover(&name);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

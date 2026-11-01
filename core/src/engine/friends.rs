@@ -17,6 +17,10 @@ use crate::{
 use super::Engine;
 
 const FRIENDS_FILE: &str = "friends.json";
+/// Last.fm users removed here, so following them doesn't bring them back.
+const HIDDEN_FILE: &str = "friends-hidden.json";
+/// How often who the user follows on Last.fm is read again.
+const FOLLOW_SYNC: Duration = Duration::from_secs(15 * 60);
 /// How often presence is checked: often while the menu (and its Friends
 /// card) is open, rarely otherwise, to keep the network quiet.
 const CHECK_OPEN: Duration = Duration::from_secs(60);
@@ -36,6 +40,10 @@ pub struct Friend {
     /// Their Last.fm picture, remembered between runs.
     #[serde(default)]
     pub avatar: Option<String>,
+    /// Added because the user follows them on Last.fm (so unfollowing
+    /// them there removes them here too).
+    #[serde(default)]
+    pub from_lastfm: bool,
 }
 
 /// A Jam invite from a friend, waiting for Join or Not now.
@@ -61,6 +69,10 @@ pub struct FriendsState {
     notice: Option<(String, Instant)>,
     /// Last.fm users whose picture was asked for this run.
     pub avatars_asked: std::collections::HashSet<String>,
+    /// Last.fm users removed here (lower-case), not re-added by the sync.
+    pub hidden: Vec<String>,
+    /// When who the user follows on Last.fm was last asked for.
+    follows_checked: Option<Instant>,
 }
 
 impl FriendsState {
@@ -91,6 +103,95 @@ impl FriendsState {
 impl Engine {
     pub fn load_friends(&mut self) {
         self.friends.list = storage::read(FRIENDS_FILE).unwrap_or_default();
+        self.friends.hidden = storage::read(HIDDEN_FILE).unwrap_or_default();
+    }
+
+    /// Every few minutes, with Last.fm connected: read who the user follows
+    /// there, so friends are the same on every device.
+    fn sync_follows(&mut self) {
+        if self
+            .friends
+            .follows_checked
+            .is_some_and(|at| at.elapsed() < FOLLOW_SYNC)
+        {
+            return;
+        }
+        let user = self.settings.lastfm.username.clone();
+        let Some(api_key) = crate::lastfm::lookup_key(&self.settings.lastfm.api_key) else {
+            return;
+        };
+        if user.is_empty() || !self.lastfm_connected() {
+            return;
+        }
+        self.friends.follows_checked = Some(Instant::now());
+        self.lastfm
+            .browse(crate::lastfm::BrowseRequest::Following { api_key, user });
+    }
+
+    /// Check who the user follows on Last.fm on the next tick.
+    pub fn refresh_follows(&mut self) {
+        self.friends.follows_checked = None;
+    }
+
+    /// Who the user follows on Last.fm arrived: they're friends here too
+    /// (unless removed here). Friends who came from Last.fm and were
+    /// unfollowed there go, unless a friend code was added for them.
+    pub fn receive_follows(&mut self, followed: Vec<crate::lastfm::browse::Followed>) {
+        let mut changed = false;
+        let names: std::collections::HashSet<String> = followed
+            .iter()
+            .map(|person| person.name.to_lowercase())
+            .collect();
+        for person in followed {
+            let key = person.name.to_lowercase();
+            if self.friends.hidden.contains(&key) {
+                continue;
+            }
+            let existing = self.friends.list.iter_mut().find(|friend| {
+                friend
+                    .lastfm
+                    .as_deref()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(&person.name))
+            });
+            match existing {
+                Some(friend) => {
+                    if friend.avatar.is_none() && person.image.is_some() {
+                        friend.avatar = person.image;
+                        changed = true;
+                    }
+                }
+                None => {
+                    self.friends.list.push(Friend {
+                        name: person.name.clone(),
+                        lastfm: Some(person.name),
+                        id: None,
+                        avatar: person.image,
+                        from_lastfm: true,
+                    });
+                    changed = true;
+                }
+            }
+        }
+        let before = self.friends.list.len();
+        self.friends.list.retain(|friend| {
+            let unfollowed = friend
+                .lastfm
+                .as_deref()
+                .is_some_and(|name| !names.contains(&name.to_lowercase()));
+            !(friend.from_lastfm && friend.id.is_none() && unfollowed)
+        });
+        if changed || self.friends.list.len() != before {
+            self.save_friends();
+        }
+    }
+
+    /// Remember a Last.fm user was removed here, so the sync leaves them out.
+    fn hide_follow(&mut self, name: &str) {
+        let key = name.to_lowercase();
+        if !self.friends.hidden.contains(&key) {
+            self.friends.hidden.push(key);
+            storage::write_in_background(HIDDEN_FILE, &self.friends.hidden);
+        }
     }
 
     /// A friend's Last.fm picture arrived: keep it if it changed.
@@ -131,7 +232,9 @@ impl Engine {
         }
         std::env::var("USERNAME")
             .or_else(|_| std::env::var("USER"))
-            .unwrap_or_else(|_| "MusiKPL user".into())
+            .ok()
+            .or_else(crate::platform::device_name)
+            .unwrap_or_else(|| "MusiKPL user".into())
     }
 
     pub fn my_friend_code(&self) -> String {
@@ -147,19 +250,29 @@ impl Engine {
         if self.friends.is_friend(username) {
             return;
         }
+        let key = username.to_lowercase();
+        if self.friends.hidden.contains(&key) {
+            self.friends.hidden.retain(|name| *name != key);
+            storage::write_in_background(HIDDEN_FILE, &self.friends.hidden);
+        }
         self.friends.list.push(Friend {
             name: username.to_owned(),
             lastfm: Some(username.to_owned()),
             id: None,
             avatar: None,
+            from_lastfm: true,
         });
         self.save_friends();
+        // Following them on Last.fm makes them a friend on every device
+        // (Last.fm lets apps read follows, not make them).
+        let _ = crate::platform::open_url(&format!("https://www.last.fm/user/{username}"));
         self.set_friend_notice(format!(
-            "Added {username}. Swap friend codes to see each other online."
+            "Added {username}. Press Follow on their Last.fm page to have them on all your devices, and swap friend codes to see each other online."
         ));
     }
 
     pub fn remove_lastfm_friend(&mut self, username: &str) {
+        self.hide_follow(username);
         self.friends.list.retain(|friend| {
             !friend
                 .lastfm
@@ -171,7 +284,10 @@ impl Engine {
 
     pub fn remove_friend(&mut self, index: usize) {
         if index < self.friends.list.len() {
-            self.friends.list.remove(index);
+            let friend = self.friends.list.remove(index);
+            if let Some(name) = &friend.lastfm {
+                self.hide_follow(name);
+            }
             self.save_friends();
         }
     }
@@ -215,6 +331,7 @@ impl Engine {
                 lastfm: None,
                 id: Some(code.id.clone()),
                 avatar: None,
+                from_lastfm: false,
             }),
         }
         self.friends.code_input.clear();
@@ -232,6 +349,7 @@ impl Engine {
     /// check presence now and then, and handle invites.
     pub fn tick_friends(&mut self) {
         self.request_friend_avatars();
+        self.sync_follows();
         let ids = self.friends.ids();
         if ids.is_empty() {
             return;
@@ -428,6 +546,34 @@ mod tests {
         app.add_friend_code();
         assert_eq!(app.friends.list.len(), 2);
         assert!(app.friends.notice().is_some());
+    }
+
+    #[test]
+    fn people_followed_on_lastfm_are_friends_everywhere() {
+        use crate::lastfm::browse::Followed;
+        let follow = |name: &str| Followed {
+            name: name.into(),
+            image: None,
+        };
+        let mut app = Engine::default();
+        app.receive_follows(vec![follow("ana"), follow("bia")]);
+        assert_eq!(app.friends.list.len(), 2);
+        // A friend code added for Bia keeps her when unfollowed.
+        app.friends.list[1].id = Some("key".into());
+        app.receive_follows(vec![]);
+        assert_eq!(app.friends.list.len(), 1);
+        assert_eq!(app.friends.list[0].name, "bia");
+        // Removed here: following doesn't bring them back.
+        app.receive_follows(vec![follow("cid")]);
+        let cid = app
+            .friends
+            .list
+            .iter()
+            .position(|f| f.name == "cid")
+            .unwrap();
+        app.remove_friend(cid);
+        app.receive_follows(vec![follow("cid")]);
+        assert!(!app.friends.is_friend("cid"));
     }
 
     #[test]

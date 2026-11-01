@@ -67,8 +67,10 @@ struct YtMusicApp {
     menu_jam_open: bool,
     menu_artists_open: bool,
     menu_friends_open: bool,
-    /// A playlist cover photo being chosen.
+    /// A playlist cover photo being chosen or saved.
     cover_pick: Option<playlists_ui::CoverPick>,
+    /// The chosen photo, being cropped to the playlist's square.
+    cover_crop: Option<playlists_ui::CoverCrop>,
     /// The tray icon while MusiKPL is closed to the tray.
     tray: Option<crate::infrastructure::tray::Tray>,
     /// Really closing (Quit from the tray, an update): skip close to tray.
@@ -120,6 +122,7 @@ impl YtMusicApp {
             menu_artists_open: true,
             menu_friends_open: true,
             cover_pick: None,
+            cover_crop: None,
             tray: None,
             quitting: false,
             firewall_rx: None,
@@ -142,7 +145,7 @@ impl YtMusicApp {
 
     /// How long until the next frame is needed when nothing animates.
     fn idle_tick(&self) -> Duration {
-        let busy = self.updates.busy() || self.cover_pick.is_some();
+        let busy = self.updates.busy() || self.cover_pick.is_some() || self.cover_crop.is_some();
         let tick = self.engine.idle_tick();
         if busy {
             tick.min(Duration::from_millis(250))
@@ -530,6 +533,8 @@ impl YtMusicApp {
                         queue_open: self.queue_open,
                         liked: shown.is_some_and(|track| self.is_liked(&track.id)),
                         playlists: &self.engine.library.playlists,
+                        shuffle: self.engine.settings.shuffle,
+                        repeat: self.engine.settings.repeat,
                     },
                     &r,
                 );
@@ -662,6 +667,7 @@ impl YtMusicApp {
         if settings > 0.0 {
             self.render_settings(ctx, window, settings, &icons, &r);
         }
+        self.render_cover_crop(ctx, window, &r);
 
         // The settings window covers the main area and shows its own errors.
         let error = self.engine.error.as_ref().filter(|_| !self.settings_open);
@@ -712,7 +718,7 @@ impl eframe::App for YtMusicApp {
         self.handle_close_to_tray(ctx);
         self.engine.menu_visible = self.menu_open;
         self.engine.tick();
-        self.poll_cover_pick();
+        self.poll_cover_pick(ctx);
         self.poll_firewall();
         self.poll_updates(ctx);
         self.follow_back_and_forward(ctx);
