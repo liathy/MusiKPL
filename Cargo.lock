@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "MusiKPL"
-version = "2.3.0"
+version = "3.0.0"
 dependencies = [
  "ab_glyph",
  "base64 0.22.1",
@@ -2591,7 +2591,7 @@ dependencies = [
 
 [[package]]
 name = "musikpl-setup"
-version = "2.3.0"
+version = "3.0.0"
 dependencies = [
  "eframe",
  "windows-sys 0.52.0",
