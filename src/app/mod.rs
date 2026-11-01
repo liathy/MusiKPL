@@ -6,6 +6,7 @@ mod home_paging;
 mod jam_sync;
 mod lastfm_browse;
 mod library;
+mod navigation;
 mod playlist_recs;
 mod playlists;
 mod settings;
@@ -171,6 +172,8 @@ struct YtMusicApp {
     stale_images: Vec<String>,
     /// When the previous frame started, for the frame-rate cap.
     last_frame: Option<Instant>,
+    /// Back and forward between pages.
+    nav: navigation::Navigation,
 }
 
 /// Shortest time between frames: at most 60 per second, whatever asks for
@@ -253,6 +256,7 @@ impl Default for YtMusicApp {
             cover_art: CoverArt,
             stale_images: Vec::new(),
             last_frame: None,
+            nav: navigation::Navigation::default(),
         }
     }
 }
@@ -758,6 +762,8 @@ impl YtMusicApp {
                         menu_open: self.menu_open,
                         home_open: self.view == View::Home,
                         maximized,
+                        can_back: self.nav.can_back(),
+                        can_forward: self.nav.can_forward(),
                         recent: &self.settings.recent_searches,
                     },
                     &icons,
@@ -871,6 +877,7 @@ impl YtMusicApp {
                                 finding_song: self.browse.finding_song(),
                                 similar_photos: photos.similar.clone(),
                                 guest,
+                                playlists: &self.library.playlists,
                             },
                             &icons,
                             &r,
@@ -1039,6 +1046,8 @@ impl YtMusicApp {
                     self.view = View::Home;
                     self.refresh_home(false);
                 }
+                TopBarAction::Back => self.go_back(),
+                TopBarAction::Forward => self.go_forward(),
                 TopBarAction::Search => self.search(),
                 TopBarAction::SearchFor(query) => {
                     self.search = query;
@@ -1253,6 +1262,7 @@ impl eframe::App for YtMusicApp {
         self.keep_playlist_recs();
         self.tick_browse();
         self.tick_friends(ctx);
+        self.tick_history(ctx);
         self.poll_updates(ctx);
         self.preload_next();
         self.handle_finished_track();

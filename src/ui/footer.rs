@@ -27,6 +27,8 @@ pub(crate) enum FooterAction {
     ToggleLike,
     AddToPlaylist(PlaylistTarget),
     ToggleMute,
+    /// The artist's name was clicked: open their Last.fm page.
+    OpenArtist,
 }
 
 pub(crate) struct FooterState<'a> {
@@ -185,6 +187,36 @@ fn track_info(
         theme.text,
         r,
     );
+    // The artist's name opens their Last.fm page.
+    let mut subtitle_color = subtitle_color;
+    if state.track.is_some() && !state.loading {
+        let font = fonts::body(r.rem(0.875));
+        let width = ui
+            .painter()
+            .layout_no_wrap(subtitle.to_owned(), font, subtitle_color)
+            .size()
+            .x
+            .min(subtitle_rect.width());
+        let name_rect = Rect::from_min_size(subtitle_rect.min, vec2(width, subtitle_rect.height()));
+        let name = ui.interact(name_rect, Id::new("footer_artist"), Sense::click());
+        if name.hovered() {
+            subtitle_color = theme.secondary_text;
+            ui.painter().line_segment(
+                [
+                    pos2(name_rect.left(), name_rect.center().y + r.rem(0.5)),
+                    pos2(name_rect.right(), name_rect.center().y + r.rem(0.5)),
+                ],
+                egui::Stroke::new(1.0_f32, subtitle_color),
+            );
+        }
+        if name
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_text("Open artist")
+            .clicked()
+        {
+            actions.push(FooterAction::OpenArtist);
+        }
+    }
     marquee(
         ui,
         subtitle_rect,

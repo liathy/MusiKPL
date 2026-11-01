@@ -155,6 +155,12 @@ pub(crate) enum BrowseRequest {
         api_key: String,
         query: String,
     },
+    /// The best Last.fm artist for a YouTube artist name; answered as
+    /// [`LastFmEvent::Artist`] under `names[0]`.
+    BestArtist {
+        api_key: String,
+        names: Vec<String>,
+    },
     Profile {
         api_key: String,
         user: String,
@@ -207,6 +213,10 @@ impl LastFm {
                 BrowseRequest::Artists { api_key, query } => LastFmEvent::Artists {
                     result: browse::search_artists(&api_key, &query),
                     query,
+                },
+                BrowseRequest::BestArtist { api_key, names } => LastFmEvent::Artist {
+                    result: browse::best_artist_page(&api_key, &names),
+                    name: names.first().cloned().unwrap_or_default(),
                 },
                 BrowseRequest::Tracks { api_key, query } => LastFmEvent::Tracks {
                     result: browse::search_tracks(&api_key, &query),

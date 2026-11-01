@@ -180,6 +180,67 @@ fn parse_artist_hits(value: Option<&Value>) -> Vec<ArtistHit> {
         .collect()
 }
 
+/// The Last.fm page for a YouTube artist name. Last.fm has many artists with
+/// similar names, so its search is asked and the most listened artist whose
+/// name matches one of `names` (best guess first) is taken; failing that,
+/// Last.fm's own correction of the first name.
+pub(crate) fn best_artist_page(api_key: &str, names: &[String]) -> Result<ArtistPage, String> {
+    let first = names.first().ok_or("No artist name")?;
+    for name in names.iter().take(2) {
+        if let Ok(hits) = search_artists(api_key, name) {
+            if let Some(best) = pick_artist(names, &hits) {
+                return artist_page(api_key, &best);
+            }
+        }
+    }
+    artist_page(api_key, first)
+}
+
+/// Letters and digits only, lower-case: "Hardwell (Official)" and
+/// "hardwell" compare by what's spelled.
+fn spelled(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// Among search hits, the most listened one named like a candidate:
+/// - an exact match, unless a famous artist's name is inside the YouTube
+///   name ("Queen" in "Queen Official") with ten times the listeners, as
+///   small Last.fm artists exist under such names too;
+/// - else a name inside a candidate, then a name containing one.
+fn pick_artist(names: &[String], hits: &[ArtistHit]) -> Option<String> {
+    let wanted: Vec<String> = names
+        .iter()
+        .map(|name| spelled(name))
+        .filter(|name| !name.is_empty())
+        .collect();
+    let most_listened = |matches: &dyn Fn(&str) -> bool| {
+        hits.iter()
+            .filter(|hit| matches(&spelled(&hit.name)))
+            .max_by_key(|hit| hit.listeners)
+    };
+    let exact = most_listened(&|hit| wanted.iter().any(|name| name == hit));
+    let inside = most_listened(&|hit| {
+        hit.chars().count() >= 3 && wanted.iter().any(|name| name != hit && name.contains(hit))
+    });
+    let around = || {
+        most_listened(&|hit| {
+            hit.chars().count() >= 3 && wanted.iter().any(|name| hit.contains(name.as_str()))
+        })
+    };
+    let pick = match (exact, inside) {
+        (Some(exact), Some(inside)) if inside.listeners >= exact.listeners.saturating_mul(10) => {
+            Some(inside)
+        }
+        (Some(exact), _) => Some(exact),
+        (None, Some(inside)) => Some(inside),
+        (None, None) => around(),
+    };
+    pick.map(|hit| hit.name.clone())
+}
+
 pub(crate) fn artist_page(api_key: &str, name: &str) -> Result<ArtistPage, String> {
     let info = call(
         "artist.getInfo",
@@ -367,6 +428,72 @@ fn parse_profile_tracks(value: Option<&Value>) -> Vec<ProfileTrack> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn hit(name: &str, listeners: u64) -> ArtistHit {
+        ArtistHit {
+            name: name.into(),
+            listeners,
+        }
+    }
+
+    /// Needs the internet: YouTube-style names find the right Last.fm page.
+    #[test]
+    #[ignore]
+    fn youtube_names_find_the_right_artist() {
+        let (key, _) = crate::lastfm::built_in_keys().expect("built-in key");
+        // (YouTube title, channel) as the player bar has them.
+        for (title, channel, expected) in [
+            ("Мало тебя", "SEREBRO - Topic", "Serebro"),
+            (
+                "Hardwell & KAAZE - Spaceman",
+                "Revealed Recordings",
+                "Hardwell",
+            ),
+            ("Blinding Lights", "TheWeekndVEVO", "The Weeknd"),
+            ("Bohemian Rhapsody", "Queen Official", "Queen"),
+            ("Numb", "Linkin Park", "Linkin Park"),
+        ] {
+            let track = crate::domain::Track {
+                title: title.into(),
+                id: String::new(),
+                duration: None,
+                channel: channel.into(),
+            };
+            let names = crate::domain::artist_candidates(&track);
+            let page = best_artist_page(&key, &names).unwrap();
+            println!("{names:?} -> {} ({} listeners)", page.name, page.listeners);
+            assert!(
+                page.name.eq_ignore_ascii_case(expected),
+                "{names:?} -> {}",
+                page.name
+            );
+        }
+    }
+    #[test]
+    fn the_most_listened_matching_artist_is_picked() {
+        let names = vec!["SEREBRO".to_string()];
+        let hits = [
+            hit("Serebro & Friends", 900),
+            hit("Serebro", 450_000),
+            hit("SEREBRO.", 1_200),
+        ];
+        assert_eq!(pick_artist(&names, &hits).as_deref(), Some("Serebro"));
+        // No exact match: the most listened close one.
+        let names = vec!["Hardwell Official".to_string()];
+        let hits = [hit("Hardwell", 1_000_000), hit("DJ Hardwell", 50)];
+        assert_eq!(pick_artist(&names, &hits).as_deref(), Some("Hardwell"));
+        // A small artist named like the upload loses to the famous one.
+        let names = vec!["Queen Official".to_string()];
+        let hits = [hit("Queen Official", 9_000), hit("Queen", 5_000_000)];
+        assert_eq!(pick_artist(&names, &hits).as_deref(), Some("Queen"));
+        // But a real exact match keeps its page.
+        let names = vec!["Serebro".to_string()];
+        let hits = [hit("Serebro", 450_000), hit("Sere", 900_000)];
+        assert_eq!(pick_artist(&names, &hits).as_deref(), Some("Serebro"));
+        // Nothing alike.
+        let names = vec!["Hardwell Official".to_string()];
+        assert_eq!(pick_artist(&names, &[hit("Queen", 5)]), None);
+    }
 
     #[test]
     fn track_search_results_are_read() {

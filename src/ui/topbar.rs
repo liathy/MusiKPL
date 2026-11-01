@@ -19,6 +19,9 @@ use crate::{
 pub(crate) enum TopBarAction {
     ToggleMenu,
     Home,
+    /// The previous or next page in the history.
+    Back,
+    Forward,
     Search,
     /// A recent search was picked.
     SearchFor(String),
@@ -103,6 +106,54 @@ pub(crate) fn show(
         actions.push(TopBarAction::Home);
     }
 
+    // Back and forward, beside Home.
+    let mut nav_left = home_rect.right() + r.rem(0.375);
+    for (id, enabled, icon, tip, action) in [
+        (
+            "top_bar_back",
+            state.can_back,
+            &icons.back,
+            "Back",
+            TopBarAction::Back,
+        ),
+        (
+            "top_bar_forward",
+            state.can_forward,
+            &icons.forward,
+            "Forward",
+            TopBarAction::Forward,
+        ),
+    ] {
+        let rect = Rect::from_min_size(pos2(nav_left, center_y - r.rem(1.0)), r.rem2(2.0, 2.0));
+        nav_left = rect.right() + r.rem(0.25);
+        let response = ui.interact(rect, Id::new(id), Sense::click());
+        let mut colors = ButtonColors::round(&theme);
+        if !enabled {
+            colors.fill = Color32::TRANSPARENT;
+            colors.hover_fill = Color32::TRANSPARENT;
+            colors.icon = theme.muted_text;
+            colors.hover_icon = theme.muted_text;
+        }
+        paint_icon_button(
+            ui,
+            rect,
+            &response,
+            icon,
+            r.rem2(1.125, 1.125),
+            rect.width() / 2.0,
+            colors,
+        );
+        if enabled
+            && response
+                .on_hover_cursor(CursorIcon::PointingHand)
+                .on_hover_text(tip)
+                .clicked()
+        {
+            actions.push(action);
+        }
+    }
+    let nav_right = nav_left;
+
     // Window controls, right to left.
     let control = r.rem2(2.25, 2.25);
     let close_rect =
@@ -173,7 +224,7 @@ pub(crate) fn show(
 
     // Search fills the space between the menu and the logo, up to 1000 px.
     let space = Rect::from_min_max(
-        pos2(home_rect.right() + r.rem(1.125), bar.top()),
+        pos2(nav_right + r.rem(0.875), bar.top()),
         pos2(logo_left - r.rem(1.0), bar.bottom()),
     );
     let pill = Rect::from_center_size(
@@ -195,6 +246,9 @@ pub(crate) struct TopBarState<'a> {
     pub(crate) home_open: bool,
     /// The window is maximized (the button then restores it).
     pub(crate) maximized: bool,
+    /// There is a page to go back or forward to.
+    pub(crate) can_back: bool,
+    pub(crate) can_forward: bool,
     /// Recent searches, newest first.
     pub(crate) recent: &'a [String],
 }

@@ -1,4 +1,5 @@
 pub(crate) mod bundled;
+pub(crate) mod cloudflare_dns;
 pub(crate) mod images;
 pub(crate) mod install;
 pub(crate) mod mpv;

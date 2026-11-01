@@ -20,7 +20,10 @@ use crate::{
     },
     media::query_ytdlp_limited,
     recommendations::home::Followed,
-    ui::{artist::ArtistAction, profile::ProfileAction},
+    ui::{
+        artist::{ArtistAction, SongPick},
+        profile::ProfileAction,
+    },
 };
 
 use super::{errors::AppError, View, YtMusicApp};
@@ -44,6 +47,8 @@ pub(crate) struct Bookmark {
 pub(crate) enum SongIntent {
     Play,
     AddToMix,
+    Like,
+    AddToPlaylist(crate::ui::menu::PlaylistTarget),
 }
 
 /// Pictures for one frame: the user's avatar and artists' photos.
@@ -89,6 +94,9 @@ pub(super) struct Browse {
     image_queue: VecDeque<String>,
     image_rx: Option<Receiver<(String, Option<String>)>>,
     song_rx: Option<(Receiver<Result<Track, String>>, SongIntent)>,
+    /// YouTube artist names (lower-case) to the Last.fm artist found for
+    /// them, so a second click opens straight away.
+    resolved: HashMap<String, String>,
 }
 
 impl Browse {
@@ -209,6 +217,36 @@ impl YtMusicApp {
         }
     }
 
+    /// Open the Last.fm page of a YouTube song's artist (the player bar's
+    /// artist name). The most listened Last.fm artist named like it is
+    /// picked, since Last.fm has many with similar names.
+    pub(super) fn open_track_artist(&mut self, track: &Track) {
+        let names = crate::domain::artist_candidates(track);
+        let Some(first) = names.first().cloned() else {
+            return;
+        };
+        if let Some(name) = self.browse.resolved.get(&first.to_lowercase()).cloned() {
+            self.open_artist(&name);
+            return;
+        }
+        self.view = View::Artist;
+        if self.browse.artist_name.eq_ignore_ascii_case(&first) && self.browse.artist.is_some() {
+            return;
+        }
+        self.browse.artist_name = first;
+        self.browse.artist = None;
+        match self.lookup_key() {
+            Some(api_key) => self
+                .lastfm
+                .browse(BrowseRequest::BestArtist { api_key, names }),
+            None => {
+                self.browse.artist = Some(Err(
+                    "Artist pages need a Last.fm API key (Settings → Last.fm)".into(),
+                ))
+            }
+        }
+    }
+
     pub(super) fn toggle_bookmark(&mut self) {
         let name = self.browse.artist_name.clone();
         if self.browse.is_bookmarked(&name) {
@@ -293,7 +331,22 @@ impl YtMusicApp {
                 }
             }
             LastFmEvent::Artist { name, result } => {
+                if let Ok(page) = &result {
+                    if !page.name.eq_ignore_ascii_case(&name) {
+                        self.browse
+                            .resolved
+                            .insert(name.to_lowercase(), page.name.clone());
+                    }
+                }
                 if name.eq_ignore_ascii_case(&self.browse.artist_name) {
+                    // Show Last.fm's spelling of the name (and bookmark,
+                    // photo and history under it).
+                    if let Ok(page) = &result {
+                        if self.browse.artist_name != page.name {
+                            self.browse.artist_name.clone_from(&page.name);
+                            self.artist_renamed();
+                        }
+                    }
                     if let Ok(page) = &result {
                         // Keep a bookmark's similar artists current.
                         if let Some(bookmark) = self
@@ -400,9 +453,17 @@ impl YtMusicApp {
         };
         self.browse.song_rx = None;
         match (found, intent) {
-            (Ok(track), _) if self.is_guest() => self.request_from_host(&track),
+            (Ok(track), SongIntent::Play | SongIntent::AddToMix) if self.is_guest() => {
+                self.request_from_host(&track)
+            }
             (Ok(track), SongIntent::Play) => self.play_search_track(track),
             (Ok(track), SongIntent::AddToMix) => self.add_to_queue(track),
+            (Ok(track), SongIntent::Like) => {
+                if !self.is_liked(&track.id) {
+                    self.toggle_like(&track);
+                }
+            }
+            (Ok(track), SongIntent::AddToPlaylist(target)) => self.add_to_playlist(track, target),
             (Err(error), _) => self.error = Some(AppError::Search(error)),
         }
     }
@@ -502,8 +563,13 @@ impl YtMusicApp {
         match action {
             ArtistAction::ToggleBookmark => self.toggle_bookmark(),
             ArtistAction::Play(title) => self.find_and_play(&artist, &title, SongIntent::Play),
-            ArtistAction::AddToMix(title) => {
-                self.find_and_play(&artist, &title, SongIntent::AddToMix)
+            ArtistAction::Add(title, pick) => {
+                let intent = match pick {
+                    SongPick::Like => SongIntent::Like,
+                    SongPick::Mix => SongIntent::AddToMix,
+                    SongPick::Playlist(target) => SongIntent::AddToPlaylist(target),
+                };
+                self.find_and_play(&artist, &title, intent)
             }
             ArtistAction::OpenArtist(name) => self.open_artist(&name),
             ArtistAction::OpenUrl(url) => self.open_link(&url),

@@ -88,6 +88,50 @@ fn clean_title(title: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Names to look for on Last.fm for a YouTube song's artist, best first:
+/// the main artist (before "feat.", "&", "x", ","), the whole artist
+/// credit, then the channel's name.
+pub(crate) fn artist_candidates(track: &Track) -> Vec<String> {
+    let artist = song_info(track).artist;
+    let channel = track.channel.trim();
+    let channel = channel.strip_suffix(" - Topic").unwrap_or(channel);
+    let mut names: Vec<String> = Vec::new();
+    for name in [main_artist(&artist), artist.clone(), clean_channel(channel)] {
+        let name = name.trim().to_owned();
+        if !name.is_empty() && !names.iter().any(|known| known.eq_ignore_ascii_case(&name)) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// The first artist of a credit like "A feat. B", "A & B", "A x B", "A, B".
+fn main_artist(credit: &str) -> String {
+    const SPLITS: &[&str] = &[
+        " feat. ",
+        " feat ",
+        " ft. ",
+        " ft ",
+        " featuring ",
+        " & ",
+        " x ",
+        " and ",
+        ", ",
+        " + ",
+        " / ",
+        " vs. ",
+        " vs ",
+    ];
+    let lower = credit.to_lowercase();
+    let cut = SPLITS
+        .iter()
+        .filter_map(|split| lower.find(split))
+        .min()
+        .filter(|&at| credit.is_char_boundary(at))
+        .unwrap_or(credit.len());
+    credit[..cut].trim().to_owned()
+}
+
 fn clean_channel(channel: &str) -> String {
     let channel = channel.strip_suffix("VEVO").unwrap_or(channel);
     let channel = channel
@@ -100,6 +144,22 @@ fn clean_channel(channel: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_main_artist_comes_first_then_the_credit_and_channel() {
+        assert_eq!(
+            artist_candidates(&track("Hardwell & KAAZE - Spaceman", "HardwellVEVO")),
+            vec!["Hardwell", "Hardwell & KAAZE"]
+        );
+        assert_eq!(
+            artist_candidates(&track("Мало тебя", "SEREBRO - Topic")),
+            vec!["SEREBRO"]
+        );
+        assert_eq!(
+            artist_candidates(&track("Song", "Some Label Official")),
+            vec!["Some Label"]
+        );
+    }
 
     fn track(title: &str, channel: &str) -> Track {
         Track {

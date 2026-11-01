@@ -50,6 +50,8 @@ icon_files! {
     restore => "restore.svg",
     friends => "friends.svg",
     artist => "artist.svg",
+    back => "back.svg",
+    forward => "forward.svg",
 }
 
 fn load(ctx: &egui::Context, name: &str, bytes: &[u8]) -> Result<TextureHandle, String> {

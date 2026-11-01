@@ -37,8 +37,11 @@ pub(crate) struct Release {
     portable_url: Option<String>,
 }
 
+/// GitHub's addresses are looked up through Cloudflare (1.1.1.1), so an
+/// internet provider blocking GitHub by DNS doesn't stop updates.
 fn agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
+        .resolver(super::cloudflare_dns::CloudflareDns)
         .timeout_connect(Duration::from_secs(15))
         .timeout_read(Duration::from_secs(60))
         .user_agent(concat!("MusiKPL/", env!("CARGO_PKG_VERSION")))
@@ -241,6 +244,14 @@ pub(crate) fn wait_for_exit(pid: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Needs the internet: the real update check, with GitHub found through
+    /// Cloudflare.
+    #[test]
+    #[ignore]
+    fn the_update_check_reaches_github_through_cloudflare() {
+        check().unwrap();
+    }
 
     #[test]
     fn versions_compare_numerically() {

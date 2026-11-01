@@ -117,9 +117,18 @@ pub(crate) fn artist_card(
 pub(crate) enum ArtistAction {
     ToggleBookmark,
     Play(String),
-    AddToMix(String),
+    /// A choice from a top song's + menu.
+    Add(String, SongPick),
     OpenArtist(String),
     OpenUrl(String),
+}
+
+/// What a top song's + menu does with it, once it's found on YouTube.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SongPick {
+    Like,
+    Mix,
+    Playlist(crate::ui::menu::PlaylistTarget),
 }
 
 pub(crate) struct ArtistView<'a> {
@@ -132,6 +141,7 @@ pub(crate) struct ArtistView<'a> {
     /// Photos of the similar artists, in order.
     pub(crate) similar_photos: Vec<Option<Cover>>,
     pub(crate) guest: bool,
+    pub(crate) playlists: &'a crate::domain::Playlists,
 }
 
 pub(crate) fn show_artist(
@@ -340,8 +350,9 @@ pub(crate) fn tag_chip(ui: &mut Ui, tag: &str, theme: &Theme, r: &ResponsiveUi) 
     );
 }
 
-/// A top song: number, title, plays, and + (add to mix) on hover. Clicking
-/// plays it (it is found on YouTube first).
+/// A top song: number, title, plays, and + on hover, with the same menu as
+/// song cards (like, add to the mix, add to a playlist). Clicking plays it
+/// (it is found on YouTube first).
 #[allow(clippy::too_many_arguments)]
 fn song_row(
     ui: &mut Ui,
@@ -402,7 +413,10 @@ fn song_row(
     let pointer = ui.input(|input| input.pointer.interact_pos());
     let on_add = pointer.is_some_and(|pointer| add.contains(pointer));
     let button = ui.interact(add, item_id("artist_add", title), Sense::click());
-    if row.contains_pointer() {
+    let popup = item_id("artist_add_popup", title);
+    let popup_open = ui.memory(|memory| memory.is_popup_open(popup));
+    // The + stays while its menu is open, even with the pointer on the menu.
+    if row.contains_pointer() || popup_open {
         let colors = widgets::ButtonColors::round(theme);
         widgets::paint_icon_button(
             ui,
@@ -415,16 +429,32 @@ fn song_row(
         );
     }
     let clicked = row.clicked() || button.clicked();
-    button
-        .on_hover_cursor(CursorIcon::PointingHand)
-        .on_hover_text(if view.guest {
-            "Add to the Jam queue"
-        } else {
-            "Add to mix"
-        });
+    let button = button.on_hover_cursor(CursorIcon::PointingHand);
+    let button = if popup_open {
+        button
+    } else {
+        button.on_hover_text("Like, add to the mix or a playlist")
+    };
     if clicked && on_add {
-        actions.push(ArtistAction::AddToMix(title.to_owned()));
-    } else if row
+        ui.memory_mut(|memory| memory.toggle_popup(popup));
+    }
+    let picked = egui::popup::popup_below_widget(
+        ui,
+        popup,
+        &button,
+        egui::PopupCloseBehavior::CloseOnClickOutside,
+        |ui| add_menu(ui, view, r),
+    )
+    .flatten();
+    if let Some(pick) = picked {
+        ui.memory_mut(|memory| memory.close_popup());
+        actions.push(ArtistAction::Add(title.to_owned(), pick));
+        return;
+    }
+    if on_add {
+        return;
+    }
+    if row
         .on_hover_cursor(CursorIcon::PointingHand)
         .on_hover_text(if view.guest {
             "Add to the Jam queue"
@@ -435,6 +465,34 @@ fn song_row(
     {
         actions.push(ArtistAction::Play(title.to_owned()));
     }
+}
+
+/// A top song's + menu. It isn't on YouTube yet, so whether it's liked or
+/// in a playlist isn't known; liking only ever likes.
+fn add_menu(ui: &mut Ui, view: &ArtistView<'_>, r: &ResponsiveUi) -> Option<SongPick> {
+    ui.set_min_width(r.rem(14.0));
+    let item = |ui: &mut Ui, text: &str| {
+        ui.add(
+            egui::Button::new(egui::RichText::new(text).font(fonts::body(r.rem(0.9375))))
+                .frame(false),
+        )
+        .clicked()
+    };
+    if item(ui, "♥ Like") {
+        return Some(SongPick::Like);
+    }
+    if item(
+        ui,
+        if view.guest {
+            "Add to the Jam queue"
+        } else {
+            "Add to mix"
+        },
+    ) {
+        return Some(SongPick::Mix);
+    }
+    ui.separator();
+    crate::ui::menu::add_to_playlist_menu(ui, view.playlists, "", r).map(SongPick::Playlist)
 }
 
 #[cfg(test)]
