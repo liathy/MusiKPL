@@ -1,6 +1,6 @@
 [package]
 name = "musikpl-setup"
-version = "3.5.0"
+version = "3.6.0"
 edition = "2021"
 description = "Installs MusiKPL for the current user, and updates it"
 publish = false
