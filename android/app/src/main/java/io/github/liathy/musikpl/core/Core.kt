@@ -23,7 +23,10 @@ import android.provider.Settings
 import java.net.Inet4Address
 import uniffi.musikpl_mobile.AndroidPlatform
 import uniffi.musikpl_mobile.ArtistState
+import uniffi.musikpl_mobile.DevicesState
+import uniffi.musikpl_mobile.DownloadsInfo
 import uniffi.musikpl_mobile.FriendsState
+import uniffi.musikpl_mobile.LyricsState
 import uniffi.musikpl_mobile.JamRole
 import uniffi.musikpl_mobile.JamState
 import uniffi.musikpl_mobile.setDeviceName
@@ -71,6 +74,7 @@ object Core {
     private val _settings = MutableStateFlow<SettingsState?>(null)
     private val _jam = MutableStateFlow<JamState?>(null)
     private val _friends = MutableStateFlow<FriendsState?>(null)
+    private val _devices = MutableStateFlow<DevicesState?>(null)
 
     val player: StateFlow<PlayerState?> = _player
     val home: StateFlow<HomeState?> = _home
@@ -84,6 +88,23 @@ object Core {
     val settings: StateFlow<SettingsState?> = _settings
     val jam: StateFlow<JamState?> = _jam
     val friends: StateFlow<FriendsState?> = _friends
+    val devices: StateFlow<DevicesState?> = _devices
+    private val _downloads = MutableStateFlow<DownloadsInfo?>(null)
+    val downloads: StateFlow<DownloadsInfo?> = _downloads
+
+    private val _lyrics = MutableStateFlow<LyricsState?>(null)
+    private val _lyricsLine = MutableStateFlow<Int?>(null)
+    val lyrics: StateFlow<LyricsState?> = _lyrics
+    val lyricsLine: StateFlow<Int?> = _lyricsLine
+    private var lyricsKey = ""
+
+    /** The lyrics sheet shows: the engine looks them up, line by line. */
+    @Volatile
+    var lyricsVisible = false
+        set(value) {
+            field = value
+            act { showLyrics(value) }
+        }
 
     /** The Jam screen shows: find nearby Jams (needs the multicast lock). */
     @Volatile
@@ -101,6 +122,8 @@ object Core {
         set(value) {
             field = value
             if (value) wake()
+            // The user's other devices are found while the app is open.
+            main.post { updateMulticast() }
         }
 
     /** Text the engine asked to copy (a friend code). */
@@ -154,7 +177,7 @@ object Core {
             val next = runCatching { engine.tick() }.getOrDefault(1000u).toLong()
             refresh()
             // While the screens show, refresh often enough for the seek bar.
-            val wait = if (visible) minOf(next, 250L) else next
+            val wait = if (lyricsVisible) minOf(next, 100L) else if (visible) minOf(next, 250L) else next
             withTimeoutOrNull(wait) { wakeUp.receive() }
         }
     }
@@ -175,6 +198,17 @@ object Core {
         _profile.value = engine.profile()
         _settings.value = engine.settings()
         _friends.value = engine.friends()
+        _devices.value = engine.devices()
+        _downloads.value = engine.downloads()
+        if (lyricsVisible) {
+            // The lines only when they change; the current line each time.
+            val key = engine.lyricsKey()
+            if (key != lyricsKey) {
+                lyricsKey = key
+                _lyrics.value = engine.lyrics()
+            }
+            _lyricsLine.value = engine.lyricsLine()?.toInt()
+        }
         val jam = engine.jam()
         if (jam.role != _jam.value?.role) main.post { updateMulticast() }
         _jam.value = jam
@@ -184,7 +218,7 @@ object Core {
     private fun updateMulticast() {
         val lock = multicast ?: return
         val inJam = _jam.value?.role?.let { it != JamRole.NONE } == true
-        if (jamVisible || inJam) {
+        if (jamVisible || inJam || visible) {
             if (!lock.isHeld) lock.acquire()
         } else if (lock.isHeld) {
             lock.release()

@@ -89,9 +89,34 @@ pub fn save_cover_cropped(source: &Path, stem: &str, crop: Option<Crop>) -> Resu
     Ok(name)
 }
 
+/// Only plain names inside the covers folder.
+fn safe_name(file_name: &str) -> bool {
+    !file_name.is_empty() && !file_name.contains(['/', '\\']) && !file_name.contains("..")
+}
+
+/// A saved cover's bytes (to send to the user's other devices).
+pub fn read_cover(file_name: &str) -> Option<Vec<u8>> {
+    if !safe_name(file_name) {
+        return None;
+    }
+    std::fs::read(covers_dir()?.join(file_name)).ok()
+}
+
+/// Save a cover that came from another of the user's devices. Only images
+/// are kept.
+pub fn write_cover(file_name: &str, bytes: &[u8]) {
+    if !safe_name(file_name) || bytes.len() > 4 * 1024 * 1024 || image::guess_format(bytes).is_err()
+    {
+        return;
+    }
+    if let Some(dir) = covers_dir() {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join(file_name), bytes);
+    }
+}
+
 pub fn delete_cover(file_name: &str) {
-    // Only plain names inside the covers folder.
-    if file_name.contains(['/', '\\']) || file_name.contains("..") {
+    if !safe_name(file_name) {
         return;
     }
     if let Some(dir) = covers_dir() {

@@ -282,6 +282,14 @@ impl YtMusicApp {
                 false
             }
             PlaylistAction::ToggleFavorite => self.library.playlists.toggle_favorite(id),
+            PlaylistAction::ToggleDownload => {
+                self.engine.toggle_playlist_download(id);
+                false
+            }
+            PlaylistAction::SetTransition(transition) => {
+                self.engine.set_playlist_transition(id, transition);
+                false
+            }
             PlaylistAction::Edit => {
                 self.start_editing_playlist();
                 false

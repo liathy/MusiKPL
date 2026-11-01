@@ -899,12 +899,22 @@ pub(crate) enum SettingsAction {
     SetAutoMix(bool),
     SetCloseToTray(bool),
     SetInvitePopups(bool),
+    SetCrossfade(musikpl_core::settings::Crossfade),
     LastFmConnect,
     LastFmCancel,
     LastFmDisconnect,
     OpenUrl(String),
     ClearHistory,
     PickGenres,
+    UnlinkDevice(usize),
+}
+
+/// One of the user's linked devices, in Settings → Last.fm.
+pub(crate) struct DeviceRow<'a> {
+    pub(crate) name: &'a str,
+    /// None: not checked yet.
+    pub(crate) online: Option<bool>,
+    pub(crate) synced: bool,
 }
 
 /// Where the Last.fm connection stands.
@@ -927,11 +937,15 @@ pub(crate) struct SettingsView<'a> {
     pub(crate) auto_mix: bool,
     pub(crate) close_to_tray: bool,
     pub(crate) invite_popups: bool,
+    pub(crate) crossfade: musikpl_core::settings::Crossfade,
     pub(crate) lastfm: LastFmState<'a>,
     /// MusiKPL carries its own key pair: connecting needs no keys.
     pub(crate) one_click: bool,
     /// The latest problem to show on the current page.
     pub(crate) error: Option<&'a str>,
+    /// The user's other devices that sync playlists.
+    pub(crate) devices: Vec<DeviceRow<'a>>,
+    pub(crate) devices_notice: Option<&'a str>,
 }
 
 const API_ACCOUNT_URL: &str = "https://www.last.fm/api/account/create";
@@ -1163,6 +1177,7 @@ fn general_page(
     ) {
         actions.push(SettingsAction::SetAutoMix(!view.auto_mix));
     }
+    crossfade_card(ui, view.crossfade, r, actions);
     if switch_card(
         ui,
         "Jam invites as pop-ups",
@@ -1505,6 +1520,9 @@ fn lastfm_page(
             }
         }
     });
+    if matches!(view.lastfm, LastFmState::Connected { .. }) {
+        devices_card(ui, view, r, actions);
+    }
     error_line(ui, view.error, r);
 }
 
@@ -1517,4 +1535,131 @@ fn status(ui: &mut Ui, color: Color32, text: &str, r: &ResponsiveUi) {
             .font(fonts::body(r.rem(0.875)))
             .color(Theme::default().secondary_text),
     );
+}
+
+/// The user's devices that keep playlists in sync.
+fn devices_card(
+    ui: &mut Ui,
+    view: &SettingsView<'_>,
+    r: &ResponsiveUi,
+    actions: &mut Vec<SettingsAction>,
+) {
+    let theme = Theme::default();
+    egui::Frame::none()
+        .fill(Color32::BLACK)
+        .stroke(Stroke::new(1.0_f32, theme.border))
+        .rounding(r.rem(0.75))
+        .inner_margin(egui::Margin::symmetric(r.rem(1.25), r.rem(1.0)))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = r.rem(0.5);
+                ui.label(
+                    egui::RichText::new("Your devices")
+                        .font(fonts::display(r.rem(1.125)))
+                        .color(theme.text),
+                );
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(
+                            "Open MusiKPL on your phone or another computer with this Last.fm account, on the same Wi-Fi, and link it once. Playlists then stay the same on both whenever they're open, anywhere, encrypted end to end.",
+                        )
+                        .font(fonts::body(r.rem(0.875)))
+                        .color(theme.secondary_text),
+                    )
+                    .wrap(),
+                );
+                for (index, device) in view.devices.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = r.rem(0.75);
+                        let (color, text) = match device.online {
+                            Some(true) if device.synced => (theme.success, "In sync"),
+                            Some(true) => (theme.warning, "Syncing…"),
+                            Some(false) => (theme.muted_text, "Not open right now"),
+                            None => (theme.muted_text, "Checking…"),
+                        };
+                        ui.label(
+                            egui::RichText::new(device.name)
+                                .font(fonts::body(r.rem(0.9375)))
+                                .color(theme.text),
+                        );
+                        status(ui, color, text, r);
+                        if pill_button(ui, "Unlink", PillKind::Secondary, PillSize::Small, r)
+                            .on_hover_text("Stop syncing with this device")
+                            .clicked()
+                        {
+                            actions.push(SettingsAction::UnlinkDevice(index));
+                        }
+                    });
+                }
+                if view.devices.is_empty() {
+                    ui.horizontal(|ui| status(ui, theme.muted_text, "No devices linked yet", r));
+                }
+                if let Some(notice) = view.devices_notice {
+                    ui.label(
+                        egui::RichText::new(notice)
+                            .font(fonts::body(r.rem(0.875)))
+                            .color(theme.secondary_text),
+                    );
+                }
+            });
+        });
+}
+
+/// Crossfade: on or off, how long, the curve, and fading on skip.
+fn crossfade_card(
+    ui: &mut Ui,
+    crossfade: musikpl_core::settings::Crossfade,
+    r: &ResponsiveUi,
+    actions: &mut Vec<SettingsAction>,
+) {
+    if switch_card(
+        ui,
+        "Crossfade songs",
+        "The next song starts under the end of this one. Each playlist can keep this, turn it off, or have its own (its Transitions button).",
+        crossfade.enabled,
+        r,
+    ) {
+        actions.push(SettingsAction::SetCrossfade(musikpl_core::settings::Crossfade {
+            enabled: !crossfade.enabled,
+            ..crossfade
+        }));
+    }
+    if !crossfade.enabled {
+        return;
+    }
+    let theme = Theme::default();
+    egui::Frame::none()
+        .fill(Color32::BLACK)
+        .stroke(Stroke::new(1.0_f32, theme.border))
+        .rounding(r.rem(0.75))
+        .inner_margin(egui::Margin::symmetric(r.rem(1.25), r.rem(1.0)))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            if let Some((seconds, curve)) =
+                crate::ui::crossfade::fade_controls(ui, crossfade.seconds, crossfade.curve, r)
+            {
+                actions.push(SettingsAction::SetCrossfade(
+                    musikpl_core::settings::Crossfade {
+                        seconds,
+                        curve,
+                        ..crossfade
+                    },
+                ));
+            }
+        });
+    if switch_card(
+        ui,
+        "Fade when skipping",
+        "A quick fade when you skip to the next song.",
+        crossfade.on_skip,
+        r,
+    ) {
+        actions.push(SettingsAction::SetCrossfade(
+            musikpl_core::settings::Crossfade {
+                on_skip: !crossfade.on_skip,
+                ..crossfade
+            },
+        ));
+    }
 }

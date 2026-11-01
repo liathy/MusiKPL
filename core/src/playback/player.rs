@@ -180,4 +180,29 @@ impl Player {
     pub fn is_finished(&mut self) -> bool {
         self.output.is_finished()
     }
+
+    /// Start `stream_url` while the song playing fades out under it.
+    pub fn crossfade_stream(
+        &mut self,
+        stream_url: &str,
+        start_secs: f64,
+        fade: crate::audio::Fade,
+    ) -> Result<(), String> {
+        self.position_anchor = None;
+        self.position = start_secs.max(0.0);
+        self.paused = false;
+        self.speed = 1.0;
+        self.started = false;
+        self.launched = None;
+        self.output
+            .crossfade(stream_url, self.volume, self.position, fade)?;
+        let now = Instant::now();
+        self.local_change = now;
+        self.launched = Some(now);
+        if !self.output.reports_position() {
+            self.started = true;
+            self.position_anchor = Some(now);
+        }
+        Ok(())
+    }
 }

@@ -87,6 +87,8 @@ impl Engine {
                 | LastFmEvent::People { .. }
                 | LastFmEvent::Tracks { .. }
                 | LastFmEvent::Following { .. }
+                | LastFmEvent::Loved { .. }
+                | LastFmEvent::TopArtists { .. }
                 | LastFmEvent::Profile { .. } => {}
             }
         }

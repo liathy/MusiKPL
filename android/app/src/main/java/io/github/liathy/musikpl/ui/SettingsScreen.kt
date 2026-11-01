@@ -1,5 +1,11 @@
 package io.github.liathy.musikpl.ui
 
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.LaunchedEffect
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -10,11 +16,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -34,6 +43,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.liathy.musikpl.core.Core
 import io.github.liathy.musikpl.update.UpdateState
 import io.github.liathy.musikpl.update.Updater
+import kotlin.math.roundToInt
+import uniffi.musikpl_mobile.FadeShape
 
 @Composable
 fun SettingsScreen(nav: Nav) {
@@ -67,6 +78,8 @@ fun SettingsScreen(nav: Nav) {
                     Pill("Your profile", { nav.profile(null) })
                     Pill("Disconnect", { Core.act { disconnectLastfm() } }, primary = false)
                 }
+                Spacer(Modifier.size(16.dp))
+                DevicesSection()
             } else if (state.lastfmConnecting) {
                 Text(
                     "Approve MusiKPL on the Last.fm page in your browser, then come back here.",
@@ -105,6 +118,13 @@ fun SettingsScreen(nav: Nav) {
                 "Off: friends' invites wait quietly on the Jam tab.",
                 state.invitePopups,
             ) { enabled -> Core.act { setInvitePopups(enabled) } }
+        }
+
+        Card("Crossfade") {
+            CrossfadeSettings(state.crossfade, state.crossfadeSeconds, state.crossfadeCurve, state.crossfadeOnSkip) {
+                    enabled, seconds, curve, onSkip ->
+                Core.act { setCrossfade(enabled, seconds, curve, onSkip) }
+            }
         }
 
         Card("Updates") {
@@ -212,5 +232,113 @@ private fun Toggle(title: String, detail: String, checked: Boolean, onChange: (B
                 uncheckedTrackColor = Palette.surface,
             ),
         )
+    }
+}
+
+/** The user's devices that sync playlists (same Last.fm account). */
+@Composable
+private fun DevicesSection() {
+    val devices by Core.devices.collectAsStateWithLifecycle()
+    val state = devices ?: return
+    // Android 17 asks before apps find other devices on the Wi-Fi.
+    val context = LocalContext.current
+    val askLocalNetwork = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    LaunchedEffect(Unit) {
+        val permission = "android.permission.ACCESS_LOCAL_NETWORK"
+        val granted = ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+        if (Build.VERSION.SDK_INT >= 36 && !granted) askLocalNetwork.launch(permission)
+    }
+    Text("Your devices", style = MaterialTheme.typography.titleMedium)
+    Text(
+        "Open MusiKPL on your computer with this Last.fm account, on the same Wi-Fi, and link it once. Playlists then stay the same on both whenever they're open, anywhere.",
+        style = MaterialTheme.typography.bodySmall,
+        color = Palette.secondary,
+    )
+    Spacer(Modifier.size(8.dp))
+    if (state.linked.isEmpty()) {
+        Text("No devices linked yet", color = Palette.muted)
+    }
+    state.linked.forEachIndexed { index, device ->
+        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(device.name)
+                Text(
+                    when (device.online) {
+                        true -> if (device.synced) "In sync" else "Syncing…"
+                        false -> "Not open right now"
+                        null -> "Checking…"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (device.online == true) Palette.secondary else Palette.muted,
+                )
+            }
+            Pill("Unlink", { Core.act { unlinkDevice(index.toUInt()) } }, primary = false)
+        }
+    }
+    state.notice?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = Palette.secondary) }
+}
+/** A fade's length and curve, shared with the playlist's transition dialog. */
+@Composable
+fun FadeControls(seconds: UByte, curve: FadeShape, onChange: (UByte, FadeShape) -> Unit) {
+    var dragging by remember { mutableStateOf<Float?>(null) }
+    val shown = (dragging ?: seconds.toFloat()).roundToInt()
+    Text("$shown seconds", style = MaterialTheme.typography.titleMedium)
+    Slider(
+        value = dragging ?: seconds.toFloat(),
+        onValueChange = { dragging = it },
+        onValueChangeFinished = {
+            dragging?.let { onChange(it.roundToInt().toUByte(), curve) }
+            dragging = null
+        },
+        valueRange = 1f..12f,
+        steps = 10,
+        colors = SliderDefaults.colors(
+            thumbColor = Color.White,
+            activeTrackColor = Color.White,
+            inactiveTrackColor = Palette.surface,
+        ),
+    )
+    Text("Curve", style = MaterialTheme.typography.bodySmall, color = Palette.muted)
+    Spacer(Modifier.size(6.dp))
+    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FadeShape.entries.forEach { shape ->
+            Pill(fadeLabel(shape), { onChange(seconds, shape) }, primary = shape == curve)
+        }
+    }
+    Spacer(Modifier.size(4.dp))
+    Text(fadeHint(curve), style = MaterialTheme.typography.bodySmall, color = Palette.secondary)
+}
+
+fun fadeLabel(shape: FadeShape) = when (shape) {
+    FadeShape.SMOOTH -> "Smooth"
+    FadeShape.EQUAL_POWER -> "Equal power"
+    FadeShape.LINEAR -> "Linear"
+    FadeShape.EXPONENTIAL -> "Late"
+}
+
+private fun fadeHint(shape: FadeShape) = when (shape) {
+    FadeShape.SMOOTH -> "Gentle at both ends, like Spotify."
+    FadeShape.EQUAL_POWER -> "Loudness stays even through the mix, DJ style."
+    FadeShape.LINEAR -> "Evenly from one song to the other."
+    FadeShape.EXPONENTIAL -> "The next song comes in late and strong."
+}
+
+@Composable
+private fun CrossfadeSettings(
+    enabled: Boolean,
+    seconds: UByte,
+    curve: FadeShape,
+    onSkip: Boolean,
+    onChange: (Boolean, UByte, FadeShape, Boolean) -> Unit,
+) {
+    Toggle("Crossfade songs", "The next song starts under the end of this one. Playlists can have their own.", enabled) {
+        onChange(it, seconds, curve, onSkip)
+    }
+    if (!enabled) return
+    Spacer(Modifier.size(12.dp))
+    FadeControls(seconds, curve) { newSeconds, newCurve -> onChange(true, newSeconds, newCurve, onSkip) }
+    Spacer(Modifier.size(12.dp))
+    Toggle("Fade when skipping", "A quick fade when you skip to the next song.", onSkip) {
+        onChange(true, seconds, curve, it)
     }
 }

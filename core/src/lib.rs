@@ -9,12 +9,15 @@
 pub mod audio;
 pub mod cloudflare_dns;
 pub mod covers;
+pub mod devices;
 pub mod domain;
+pub mod downloads;
 pub mod engine;
 pub mod extractor;
 pub mod friends;
 pub mod jam;
 pub mod lastfm;
+pub mod lyrics;
 pub mod net;
 pub mod platform;
 pub mod playback;

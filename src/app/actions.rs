@@ -22,6 +22,7 @@ pub(super) fn apply_footer_action(app: &mut YtMusicApp, action: FooterAction) {
             }
         }
         FooterAction::ToggleQueue => app.queue_open = !app.queue_open,
+        FooterAction::ToggleLyrics => app.lyrics_open = !app.lyrics_open,
         FooterAction::ToggleLike => {
             if let Some(track) = app.shown_track().cloned() {
                 app.toggle_like(&track);

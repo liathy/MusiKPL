@@ -8,7 +8,7 @@ use std::{
     time::Instant,
 };
 
-use musikpl_core::audio::{AudioOutput, PositionSample};
+use musikpl_core::audio::{AudioOutput, Fade, FadeCurve, PositionSample};
 
 use crate::infrastructure::process::{hide_console, ProcessRegistry};
 
@@ -94,6 +94,7 @@ impl MpvBackend {
         volume: u8,
         start_secs: f64,
         paused: bool,
+        fade_in: Option<Fade>,
     ) -> Result<(), String> {
         self.stop();
         let pipe_name = ipc_path(NEXT_PIPE_ID.fetch_add(1, Ordering::Relaxed));
@@ -112,6 +113,20 @@ impl MpvBackend {
         }
         if paused {
             command.arg("--pause=yes");
+        }
+        // Crossfading in: mpv's own fade, from the first sound.
+        if let Some(fade) = fade_in {
+            let curve = match fade.curve {
+                FadeCurve::Linear => "tri",
+                FadeCurve::Smooth => "hsin",
+                FadeCurve::EqualPower => "qsin",
+                FadeCurve::Exponential => "exp",
+            };
+            command.arg(format!(
+                "--af=lavfi=[afade=t=in:st={:.3}:d={:.3}:curve={curve}]",
+                start_secs.max(0.0),
+                fade.seconds
+            ));
         }
         command
             .arg(stream_url)
@@ -142,23 +157,88 @@ impl MpvBackend {
 pub(crate) struct MpvOutput {
     backend: MpvBackend,
     mpv: PathBuf,
+    registry: ProcessRegistry,
+    volume: u8,
+    /// The song fading out under a crossfade, until its fade ends.
+    fading: Arc<Mutex<Option<MpvBackend>>>,
 }
 
 impl MpvOutput {
     pub(crate) fn new(mpv: PathBuf, registry: ProcessRegistry) -> Self {
         let mut backend = MpvBackend::default();
-        backend.set_registry(registry);
-        Self { backend, mpv }
+        backend.set_registry(registry.clone());
+        Self {
+            backend,
+            mpv,
+            registry,
+            volume: 100,
+            fading: Arc::default(),
+        }
+    }
+
+    /// Stop the song fading out now (a pause, a stop, another fade).
+    fn end_fade(&mut self) {
+        if let Some(mut old) = self.fading.lock().ok().and_then(|mut fading| fading.take()) {
+            old.stop();
+        }
+    }
+}
+
+/// Turn the song fading out down along the curve, then close it. mpv's
+/// volume is cubic, so the loudness `gain` is volume × ∛gain.
+fn fade_out(fading: &Mutex<Option<MpvBackend>>, volume: u8, fade: Fade) {
+    const STEP: std::time::Duration = std::time::Duration::from_millis(40);
+    let started = Instant::now();
+    loop {
+        let t = started.elapsed().as_secs_f64() / fade.seconds.max(0.1);
+        let Ok(mut guard) = fading.lock() else { return };
+        let Some(old) = guard.as_mut() else { return };
+        if t >= 1.0 {
+            old.stop();
+            *guard = None;
+            return;
+        }
+        let level = f64::from(volume) * fade.curve.gain(1.0 - t).cbrt();
+        old.send(&format!("[\"set_property\",\"volume\",{level:.1}]"));
+        drop(guard);
+        std::thread::sleep(STEP);
     }
 }
 
 impl AudioOutput for MpvOutput {
     fn play(&mut self, url: &str, volume: u8, start_secs: f64, paused: bool) -> Result<(), String> {
+        self.end_fade();
+        self.volume = volume;
         self.backend
-            .play_stream(url, &self.mpv, volume, start_secs, paused)
+            .play_stream(url, &self.mpv, volume, start_secs, paused, None)
+    }
+
+    fn crossfade(
+        &mut self,
+        url: &str,
+        volume: u8,
+        start_secs: f64,
+        fade: Fade,
+    ) -> Result<(), String> {
+        self.end_fade();
+        self.volume = volume;
+        // The playing mpv keeps going and fades out; a new one fades in.
+        let mut fresh = MpvBackend::default();
+        fresh.set_registry(self.registry.clone());
+        let old = std::mem::replace(&mut self.backend, fresh);
+        if let Ok(mut fading) = self.fading.lock() {
+            *fading = Some(old);
+        }
+        let fading = self.fading.clone();
+        std::thread::spawn(move || fade_out(&fading, volume, fade));
+        self.backend
+            .play_stream(url, &self.mpv, volume, start_secs, false, Some(fade))
     }
 
     fn set_paused(&mut self, paused: bool) {
+        if paused {
+            self.end_fade();
+        }
         self.backend.send(if paused {
             "[\"set_property\",\"pause\",true]"
         } else {
@@ -177,11 +257,13 @@ impl AudioOutput for MpvOutput {
     }
 
     fn set_volume(&mut self, volume: u8) {
+        self.volume = volume;
         self.backend
             .send(&format!("[\"set_property\",\"volume\",{volume}]"));
     }
 
     fn stop(&mut self) {
+        self.end_fade();
         self.backend.stop();
     }
 

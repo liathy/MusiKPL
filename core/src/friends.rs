@@ -44,6 +44,11 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
 const REPLY_TIMEOUT: Duration = Duration::from_secs(6);
 /// Longest message line accepted.
 const MAX_LINE: usize = 4 * 1024;
+/// Longest sync message (playlists with their cover photos) accepted from
+/// the user's own linked devices.
+const MAX_SYNC: usize = 32 * 1024 * 1024;
+/// Waiting for a sync to arrive and be answered.
+const SYNC_TIMEOUT: Duration = Duration::from_secs(60);
 /// Longest name kept from a friend code or message.
 const MAX_NAME: usize = 40;
 
@@ -117,9 +122,27 @@ pub fn my_code(name: &str) -> FriendCode {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "lowercase")]
 enum Message {
-    Ping { name: String },
-    Invite { name: String, invite: String },
-    Ok { name: String },
+    Ping {
+        name: String,
+    },
+    Invite {
+        name: String,
+        invite: String,
+    },
+    Ok {
+        name: String,
+    },
+    /// Another device of the same user asks to be linked (accepted from
+    /// anyone; the user confirms).
+    Link {
+        name: String,
+        lastfm: String,
+    },
+    /// A linked device's data to merge (playlists).
+    Sync {
+        name: String,
+        data: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -134,6 +157,18 @@ pub enum FriendEvent {
     },
     /// An invite we sent arrived, or couldn't be delivered.
     InviteSent { id: String, delivered: bool },
+    /// A device asks to be linked as the user's own.
+    LinkRequested {
+        id: String,
+        name: String,
+        lastfm: String,
+    },
+    /// A link request we sent arrived, or couldn't be delivered.
+    LinkSent { id: String, delivered: bool },
+    /// A linked device sent its data.
+    Synced { id: String, data: String },
+    /// Our data reached a linked device, or couldn't.
+    SyncSent { id: String, delivered: bool },
     /// The service couldn't start.
     Failed(String),
 }
@@ -141,6 +176,8 @@ pub enum FriendEvent {
 enum Command {
     Check(Vec<String>),
     Invite { id: String, invite: String },
+    Link { id: String, lastfm: String },
+    Sync { id: String, data: String },
 }
 
 /// The running friends service.
@@ -212,6 +249,16 @@ impl Friends {
 
     pub fn invite(&self, id: String, invite: String) {
         let _ = self.commands.send(Command::Invite { id, invite });
+    }
+
+    /// Ask another device to link with this one (as the same user's).
+    pub fn link(&self, id: String, lastfm: String) {
+        let _ = self.commands.send(Command::Link { id, lastfm });
+    }
+
+    /// Send this device's data to a linked device.
+    pub fn sync(&self, id: String, data: String) {
+        let _ = self.commands.send(Command::Sync { id, data });
     }
 
     pub fn poll(&self) -> Vec<FriendEvent> {
@@ -299,6 +346,28 @@ async fn run(
                     report(FriendEvent::InviteSent { id, delivered });
                 });
             }
+            Command::Link { id, lastfm } => {
+                let (endpoint, report) = (endpoint.clone(), report.clone());
+                tokio::spawn(async move {
+                    let message = Message::Link {
+                        name: my_name,
+                        lastfm,
+                    };
+                    let delivered = send(&endpoint, &id, message).await.is_ok();
+                    report(FriendEvent::LinkSent { id, delivered });
+                });
+            }
+            Command::Sync { id, data } => {
+                let (endpoint, report) = (endpoint.clone(), report.clone());
+                tokio::spawn(async move {
+                    let message = Message::Sync {
+                        name: my_name,
+                        data,
+                    };
+                    let delivered = send(&endpoint, &id, message).await.is_ok();
+                    report(FriendEvent::SyncSent { id, delivered });
+                });
+            }
         }
     }
     endpoint.close().await;
@@ -322,7 +391,13 @@ async fn exchange(connection: &Connection, message: &Message) -> Result<(), ()> 
     line.push(b'\n');
     send.write_all(&line).await.map_err(|_| ())?;
     let _ = send.finish();
-    let reply = timeout(REPLY_TIMEOUT, read_line(recv))
+    // A sync takes longer to arrive and be merged than a ping.
+    let wait = if matches!(message, Message::Sync { .. }) {
+        SYNC_TIMEOUT
+    } else {
+        REPLY_TIMEOUT
+    };
+    let reply = timeout(wait, read_line(recv, MAX_LINE))
         .await
         .map_err(|_| ())?
         .ok_or(())?;
@@ -332,8 +407,8 @@ async fn exchange(connection: &Connection, message: &Message) -> Result<(), ()> 
     }
 }
 
-async fn read_line(recv: iroh::endpoint::RecvStream) -> Option<String> {
-    let mut reader = BufReader::new(recv).take(MAX_LINE as u64);
+async fn read_line(recv: iroh::endpoint::RecvStream, limit: usize) -> Option<String> {
+    let mut reader = BufReader::new(recv).take(limit as u64);
     let mut line = String::new();
     reader.read_line(&mut line).await.ok()?;
     (!line.trim().is_empty()).then_some(line)
@@ -351,24 +426,44 @@ async fn answer(
     };
     let from = connection.remote_id();
     let is_friend = allowed.read().is_ok_and(|allowed| allowed.contains(&from));
-    if !is_friend {
-        connection.close(1u32.into(), b"not a friend");
-        return;
-    }
     let Ok(Ok((mut send, recv))) = timeout(REPLY_TIMEOUT, connection.accept_bi()).await else {
         return;
     };
-    let Ok(Some(line)) = timeout(REPLY_TIMEOUT, read_line(recv)).await else {
+    // Friends and linked devices may send syncs; anyone else only a small
+    // link request.
+    let (limit, wait) = if is_friend {
+        (MAX_SYNC, SYNC_TIMEOUT)
+    } else {
+        (MAX_LINE, REPLY_TIMEOUT)
+    };
+    let Ok(Some(line)) = timeout(wait, read_line(recv, limit)).await else {
         return;
     };
     let my_name = name.read().map(|name| name.clone()).unwrap_or_default();
     match serde_json::from_str::<Message>(&line) {
+        Ok(Message::Link { name, lastfm }) => {
+            report(FriendEvent::LinkRequested {
+                id: from.to_string(),
+                name: name.chars().take(MAX_NAME).collect(),
+                lastfm: lastfm.chars().take(MAX_NAME).collect(),
+            });
+        }
+        _ if !is_friend => {
+            connection.close(1u32.into(), b"not a friend");
+            return;
+        }
         Ok(Message::Ping { .. }) => {}
         Ok(Message::Invite { name, invite }) => {
             report(FriendEvent::Invited {
                 id: from.to_string(),
                 name: name.chars().take(MAX_NAME).collect(),
                 invite: invite.chars().take(2_000).collect(),
+            });
+        }
+        Ok(Message::Sync { data, .. }) => {
+            report(FriendEvent::Synced {
+                id: from.to_string(),
+                data,
             });
         }
         _ => return,

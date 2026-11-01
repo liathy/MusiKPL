@@ -42,6 +42,10 @@ pub(crate) enum PlaylistAction {
     PlaySuggestion(Track),
     /// The suggestions were scrolled to their end.
     MoreSuggestions,
+    /// How its songs fade into each other.
+    SetTransition(musikpl_core::domain::Transition),
+    /// Keep it downloaded for offline, or stop.
+    ToggleDownload,
 }
 
 pub(crate) struct PlaylistView<'a> {
@@ -59,6 +63,8 @@ pub(crate) struct PlaylistView<'a> {
     /// Songs to add, based on the ones already in it.
     pub(crate) suggestions: &'a [&'a Track],
     pub(crate) suggestions_loading: bool,
+    /// Kept downloaded: (songs saved, songs in it).
+    pub(crate) downloaded: Option<(usize, usize)>,
 }
 
 pub(crate) fn show(
@@ -431,6 +437,70 @@ fn header(
                 .clicked()
                 {
                     actions.push(PlaylistAction::Edit);
+                }
+                let mut download_colors = ButtonColors::round(theme);
+                if view.downloaded.is_some() {
+                    download_colors.icon = theme.success;
+                    download_colors.hover_icon = theme.success;
+                }
+                let download_tip = match view.downloaded {
+                    Some((saved, total)) if saved < total => {
+                        format!("Downloading for offline: {saved} of {total}. Click to stop")
+                    }
+                    Some(_) => "Downloaded: plays offline. Click to remove the download".to_owned(),
+                    None => "Download to play offline (songs added later too)".to_owned(),
+                };
+                if icon_button(
+                    ui,
+                    &icons.download,
+                    r.rem2(2.5, 2.5),
+                    r.rem2(1.125, 1.125),
+                    r.rem(1.25),
+                    download_colors,
+                )
+                .on_hover_text(download_tip)
+                .clicked()
+                {
+                    actions.push(PlaylistAction::ToggleDownload);
+                }
+                if let Some((saved, total)) = view.downloaded.filter(|(s, t)| s < t) {
+                    ui.label(
+                        egui::RichText::new(format!("{saved}/{total}"))
+                            .font(fonts::body(r.rem(0.8125)))
+                            .color(theme.secondary_text),
+                    );
+                }
+                let mut fade_colors = ButtonColors::round(theme);
+                if playlist.transition != musikpl_core::domain::Transition::Default {
+                    fade_colors.icon = theme.text;
+                }
+                let fade = icon_button(
+                    ui,
+                    &icons.crossfade,
+                    r.rem2(2.5, 2.5),
+                    r.rem2(1.125, 1.125),
+                    r.rem(1.25),
+                    fade_colors,
+                );
+                let popup = Id::new(("playlist_transitions", playlist.id));
+                let fade = if ui.memory(|memory| memory.is_popup_open(popup)) {
+                    fade
+                } else {
+                    fade.on_hover_text("Transitions: how songs fade into each other")
+                };
+                if fade.clicked() {
+                    ui.memory_mut(|memory| memory.toggle_popup(popup));
+                }
+                let picked = egui::popup::popup_below_widget(
+                    ui,
+                    popup,
+                    &fade,
+                    egui::PopupCloseBehavior::CloseOnClickOutside,
+                    |ui| crate::ui::crossfade::transition_menu(ui, playlist.transition, r),
+                )
+                .flatten();
+                if let Some(transition) = picked {
+                    actions.push(PlaylistAction::SetTransition(transition));
                 }
             });
         });

@@ -60,6 +60,8 @@ struct YtMusicApp {
     /// The docked menu and queue; both may be open, and they stay open.
     menu_open: bool,
     queue_open: bool,
+    /// The lyrics view covers the main area.
+    pub(crate) lyrics_open: bool,
     settings_open: bool,
     updates: Updates,
     /// Which menu cards are expanded.
@@ -115,6 +117,7 @@ impl YtMusicApp {
             registry,
             menu_open: false,
             queue_open: false,
+            lyrics_open: false,
             settings_open: false,
             updates: Updates::default(),
             menu_playlists_open: true,
@@ -235,6 +238,15 @@ impl YtMusicApp {
         let mut playlist_actions = Vec::new();
         let mut artist_actions = Vec::new();
         let mut profile_actions = Vec::new();
+        let mut lyrics_action = None;
+        self.engine.show_lyrics(self.lyrics_open);
+        // The song menus show which songs are downloaded.
+        ctx.data_mut(|data| {
+            data.insert_temp(
+                egui::Id::new(crate::ui::menu::DOWNLOAD_MARKS),
+                crate::ui::menu::DownloadMarks(std::sync::Arc::new(self.engine.downloads.marks())),
+            );
+        });
         let mut name_draft = std::mem::take(&mut self.engine.playlist_name_draft);
         // Artist photos are looked up on demand (and queued here), so they
         // are gathered before drawing borrows the app.
@@ -292,131 +304,161 @@ impl YtMusicApp {
                 let open_playlist = self
                     .open_playlist_id()
                     .and_then(|id| self.engine.library.playlists.get(id));
-                match self.engine.view {
-                    View::Playlist => match open_playlist {
-                        Some(playlist) => {
-                            let suggestions = self.playlist_recs();
-                            playlist_actions = playlist::show(
+                if self.lyrics_open {
+                    let title = self
+                        .shown_track()
+                        .map(|t| t.title.clone())
+                        .unwrap_or_default();
+                    lyrics_action = crate::ui::lyrics::show(
+                        ui,
+                        content,
+                        &crate::ui::lyrics::LyricsView {
+                            status: &self.engine.lyrics.status,
+                            line: self.engine.lyrics_line(),
+                            title: &title,
+                        },
+                        &r,
+                    );
+                } else {
+                    match self.engine.view {
+                        View::Playlist => match open_playlist {
+                            Some(playlist) => {
+                                let suggestions = self.playlist_recs();
+                                playlist_actions = playlist::show(
+                                    ui,
+                                    content,
+                                    &PlaylistView {
+                                        playlist,
+                                        editing: self.engine.playlist_editing,
+                                        guest,
+                                        covers: &self.engine.cover_art,
+                                        liked: &liked,
+                                        playing: self.shown_track().map(|t| t.id.as_str()),
+                                        cover: playlist_cover(playlist),
+                                        suggestions: &suggestions,
+                                        suggestions_loading: self.engine.playlist_recs.loading(),
+                                        downloaded: self
+                                            .engine
+                                            .playlist_downloaded(playlist.id)
+                                            .then(|| {
+                                                let saved = playlist
+                                                    .tracks
+                                                    .iter()
+                                                    .filter(|t| {
+                                                        self.engine.downloads.is_downloaded(&t.id)
+                                                    })
+                                                    .count();
+                                                (saved, playlist.tracks.len())
+                                            }),
+                                    },
+                                    &mut name_draft,
+                                    &icons,
+                                    &r,
+                                );
+                            }
+                            None => self.engine.view = View::Home,
+                        },
+                        View::Home => {
+                            home_actions = home::show(
                                 ui,
                                 content,
-                                &PlaylistView {
-                                    playlist,
-                                    editing: self.engine.playlist_editing,
-                                    guest,
-                                    covers: &self.engine.cover_art,
-                                    liked: &liked,
-                                    playing: self.shown_track().map(|t| t.id.as_str()),
-                                    cover: playlist_cover(playlist),
-                                    suggestions: &suggestions,
-                                    suggestions_loading: self.engine.playlist_recs.loading(),
+                                &HomeView {
+                                    rows: self.home_rows(),
+                                    building: self.engine.library.building_home(),
+                                    picking_genres: self.engine.genre_picks.as_deref(),
+                                    cards,
+                                    loading_rows: self.engine.library.paging.loading_rows(),
                                 },
-                                &mut name_draft,
                                 &icons,
                                 &r,
                             );
                         }
-                        None => self.engine.view = View::Home,
-                    },
-                    View::Home => {
-                        home_actions = home::show(
-                            ui,
-                            content,
-                            &HomeView {
-                                rows: self.home_rows(),
-                                building: self.engine.library.building_home(),
-                                picking_genres: self.engine.genre_picks.as_deref(),
-                                cards,
-                                loading_rows: self.engine.library.paging.loading_rows(),
-                            },
-                            &icons,
-                            &r,
-                        );
-                    }
-                    View::Search => {
-                        card_actions = screens::show_results(
-                            ui,
-                            content,
-                            &ResultsView {
-                                results: &self.engine.results,
-                                query: &self.engine.results_query,
-                                searching: self.engine.searching,
-                                guest,
-                                covers: &self.engine.cover_art,
-                                in_mix: &in_mix,
-                                liked: &liked,
-                                playlists: &self.engine.library.playlists,
-                                artists: &self.engine.browse.artists,
-                                artist_photos: &photos.search,
-                                lastfm_songs: &self.engine.browse.tracks,
-                                finding_song: self.engine.browse.finding_song(),
-                                people: &self
-                                    .browse
-                                    .people
-                                    .iter()
-                                    .map(|person| PersonCard {
-                                        name: &person.name,
-                                        scrobbles: person.scrobbles,
-                                        avatar: person.image.clone().map(|url| {
-                                            crate::domain::Cover {
-                                                url,
-                                                uv: [0.0, 0.0, 1.0, 1.0],
-                                            }
-                                        }),
-                                    })
-                                    .collect::<Vec<_>>(),
-                            },
-                            &icons,
-                            &r,
-                        );
-                    }
-                    View::Artist => {
-                        artist_actions = artist::show_artist(
-                            ui,
-                            content,
-                            &ArtistView {
-                                name: &self.engine.browse.artist_name,
-                                page: self.engine.browse.artist.as_ref(),
-                                photo: photos.artist.clone(),
-                                bookmarked: self
-                                    .engine
-                                    .browse
-                                    .is_bookmarked(&self.engine.browse.artist_name),
-                                finding_song: self.engine.browse.finding_song(),
-                                similar_photos: photos.similar.clone(),
-                                guest,
-                                playlists: &self.engine.library.playlists,
-                            },
-                            &icons,
-                            &r,
-                        );
-                    }
-                    View::Profile => {
-                        let is_me =
-                            self.engine.browse.profile_user.is_empty() || self.profile_is_mine();
-                        let username = if !is_me {
-                            self.engine.browse.profile_user.as_str()
-                        } else if self.lastfm_connected() {
-                            self.engine.settings.lastfm.username.as_str()
-                        } else {
-                            ""
-                        };
-                        profile_actions = profile::show(
-                            ui,
-                            content,
-                            &ProfileView {
-                                username,
-                                profile: self.engine.browse.profile.as_ref(),
-                                loading: self.engine.browse.profile_loading,
-                                period: self.engine.browse.period,
-                                avatar: photos.avatar.clone(),
-                                artist_photos: photos.top_artists.clone(),
-                                now: unix_now(),
-                                is_me,
-                                is_friend: self.engine.friends.is_friend(username),
-                            },
-                            &icons,
-                            &r,
-                        );
+                        View::Search => {
+                            card_actions = screens::show_results(
+                                ui,
+                                content,
+                                &ResultsView {
+                                    results: &self.engine.results,
+                                    query: &self.engine.results_query,
+                                    searching: self.engine.searching,
+                                    guest,
+                                    covers: &self.engine.cover_art,
+                                    in_mix: &in_mix,
+                                    liked: &liked,
+                                    playlists: &self.engine.library.playlists,
+                                    artists: &self.engine.browse.artists,
+                                    artist_photos: &photos.search,
+                                    lastfm_songs: &self.engine.browse.tracks,
+                                    finding_song: self.engine.browse.finding_song(),
+                                    people: &self
+                                        .browse
+                                        .people
+                                        .iter()
+                                        .map(|person| PersonCard {
+                                            name: &person.name,
+                                            scrobbles: person.scrobbles,
+                                            avatar: person.image.clone().map(|url| {
+                                                crate::domain::Cover {
+                                                    url,
+                                                    uv: [0.0, 0.0, 1.0, 1.0],
+                                                }
+                                            }),
+                                        })
+                                        .collect::<Vec<_>>(),
+                                },
+                                &icons,
+                                &r,
+                            );
+                        }
+                        View::Artist => {
+                            artist_actions = artist::show_artist(
+                                ui,
+                                content,
+                                &ArtistView {
+                                    name: &self.engine.browse.artist_name,
+                                    page: self.engine.browse.artist.as_ref(),
+                                    photo: photos.artist.clone(),
+                                    bookmarked: self
+                                        .engine
+                                        .browse
+                                        .is_bookmarked(&self.engine.browse.artist_name),
+                                    finding_song: self.engine.browse.finding_song(),
+                                    similar_photos: photos.similar.clone(),
+                                    guest,
+                                    playlists: &self.engine.library.playlists,
+                                },
+                                &icons,
+                                &r,
+                            );
+                        }
+                        View::Profile => {
+                            let is_me = self.engine.browse.profile_user.is_empty()
+                                || self.profile_is_mine();
+                            let username = if !is_me {
+                                self.engine.browse.profile_user.as_str()
+                            } else if self.lastfm_connected() {
+                                self.engine.settings.lastfm.username.as_str()
+                            } else {
+                                ""
+                            };
+                            profile_actions = profile::show(
+                                ui,
+                                content,
+                                &ProfileView {
+                                    username,
+                                    profile: self.engine.browse.profile.as_ref(),
+                                    loading: self.engine.browse.profile_loading,
+                                    period: self.engine.browse.period,
+                                    avatar: photos.avatar.clone(),
+                                    artist_photos: photos.top_artists.clone(),
+                                    now: unix_now(),
+                                    is_me,
+                                    is_friend: self.engine.friends.is_friend(username),
+                                },
+                                &icons,
+                                &r,
+                            );
+                        }
                     }
                 }
 
@@ -531,6 +573,7 @@ impl YtMusicApp {
                         volume: self.engine.player.volume,
                         guest,
                         queue_open: self.queue_open,
+                        lyrics_open: self.lyrics_open,
                         liked: shown.is_some_and(|track| self.is_liked(&track.id)),
                         playlists: &self.engine.library.playlists,
                         shuffle: self.engine.settings.shuffle,
@@ -642,6 +685,13 @@ impl YtMusicApp {
                 QueueAction::ToggleLike(track) => self.toggle_like(&track),
             }
         }
+        match lyrics_action {
+            Some(crate::ui::lyrics::LyricsAction::Seek(at)) => {
+                actions::apply_footer_action(self, crate::ui::footer::FooterAction::Seek(at));
+            }
+            Some(crate::ui::lyrics::LyricsAction::Retry) => self.engine.retry_lyrics(),
+            None => {}
+        }
         for action in footer_actions {
             actions::apply_footer_action(self, action);
         }
@@ -649,8 +699,25 @@ impl YtMusicApp {
         if let Some(text) = self.engine.clipboard.take() {
             ctx.copy_text(text);
         }
-        // A friend's Jam invite, as a pop-up when that's the chosen style.
-        if self.engine.settings.invite_popups {
+        // The user's own device asking to link: always asked.
+        if let Some(prompt) = self.engine.devices.prompts.first().cloned() {
+            let text = format!(
+                "Link with {}? Your playlists will stay in sync on both.",
+                prompt.name
+            );
+            match crate::ui::menu::ask_popup(
+                ctx,
+                content,
+                ("device_link_popup", &prompt.name, &text, "Link"),
+                &icons,
+                &r,
+            ) {
+                Some(true) => self.engine.accept_link(&prompt.id),
+                Some(false) => self.engine.decline_link(&prompt.id),
+                None => {}
+            }
+        } else if self.engine.settings.invite_popups {
+            // A friend's Jam invite, as a pop-up when that's the chosen style.
             if let Some(invite) = self.engine.friends.invites.first().cloned() {
                 match crate::ui::menu::invite_popup(ctx, content, &invite.name, &icons, &r) {
                     Some(true) => self.join_invite_from(&invite.id),
@@ -668,6 +735,26 @@ impl YtMusicApp {
             self.render_settings(ctx, window, settings, &icons, &r);
         }
         self.render_cover_crop(ctx, window, &r);
+
+        // Offline, and downloads under way, in a small pill.
+        let status = if self.engine.offline() {
+            Some("You're offline · your downloads still play".to_owned())
+        } else if let Some(notice) = self.engine.downloads.notice() {
+            Some(notice.to_owned())
+        } else {
+            self.engine.downloads.current().map(|(track, done)| {
+                let more = self.engine.downloads.pending().saturating_sub(1);
+                let more = if more > 0 {
+                    format!(" · {more} more")
+                } else {
+                    String::new()
+                };
+                format!("Downloading {} · {}%{more}", track.title, done / 10)
+            })
+        };
+        if let Some(status) = status {
+            crate::ui::screens::status_pill(ctx, content, &status, &r);
+        }
 
         // The settings window covers the main area and shows its own errors.
         let error = self.engine.error.as_ref().filter(|_| !self.settings_open);

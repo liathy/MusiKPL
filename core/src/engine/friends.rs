@@ -215,13 +215,39 @@ impl Engine {
     fn save_friends(&mut self) {
         storage::write_in_background(FRIENDS_FILE, &self.friends.list);
         let ids = self.friends.ids();
-        if let Some(service) = &self.friends.service {
-            service.allow(&ids);
-        }
+        self.allow_peers();
         // A friend who was removed shouldn't keep a pending invite.
         self.friends
             .invites
             .retain(|invite| ids.contains(&invite.id));
+    }
+
+    /// Who may reach this device: friends and the user's linked devices.
+    fn peers(&self) -> Vec<String> {
+        let mut ids = self.friends.ids();
+        ids.extend(self.devices.ids());
+        ids
+    }
+
+    pub(super) fn allow_peers(&self) {
+        if let Some(service) = &self.friends.service {
+            service.allow(&self.peers());
+        }
+    }
+
+    pub(super) fn friends_service(&self) -> Option<&Friends> {
+        self.friends.service.as_ref()
+    }
+
+    /// Start the friends network if it isn't running.
+    pub(super) fn ensure_friends_service(&mut self) {
+        if self.friends.service.is_none() {
+            self.friends.service = Some(Friends::start(
+                &self.peers(),
+                &self.friend_name(),
+                self.waker.clone(),
+            ));
+        }
     }
 
     /// The name friends see: the Last.fm username, else the PC's user name.
@@ -351,16 +377,15 @@ impl Engine {
         self.request_friend_avatars();
         self.sync_follows();
         let ids = self.friends.ids();
-        if ids.is_empty() {
+        // Also running with Last.fm connected, so the user's other devices
+        // can ask to link.
+        let needed = !ids.is_empty()
+            || !self.devices.linked.is_empty()
+            || (self.lastfm_connected() && !self.settings.lastfm.username.is_empty());
+        if !needed {
             return;
         }
-        if self.friends.service.is_none() {
-            self.friends.service = Some(Friends::start(
-                &ids,
-                &self.friend_name(),
-                self.waker.clone(),
-            ));
-        }
+        self.ensure_friends_service();
         let events = self
             .friends
             .service
@@ -397,8 +422,21 @@ impl Engine {
                         self.friends.online.insert(id, false);
                     }
                 }
+                FriendEvent::LinkRequested { id, name, lastfm } => {
+                    self.link_requested(&id, &name, &lastfm);
+                }
+                FriendEvent::LinkSent { id, delivered } => {
+                    if !delivered {
+                        self.friends.online.insert(id, false);
+                    }
+                }
+                FriendEvent::Synced { id, data } => self.receive_sync(&id, &data),
+                FriendEvent::SyncSent { id, delivered } => self.sync_finished(&id, delivered),
                 FriendEvent::Failed(error) => self.set_friend_notice(error),
             }
+        }
+        if ids.is_empty() {
+            return;
         }
 
         let interval = if self.menu_visible {

@@ -56,6 +56,9 @@ icon_files! {
     shuffle_smart => "shuffle_smart.svg",
     repeat => "repeat.svg",
     repeat_one => "repeat_one.svg",
+    lyrics => "lyrics.svg",
+    crossfade => "crossfade.svg",
+    download => "download.svg",
 }
 
 fn load(ctx: &egui::Context, name: &str, bytes: &[u8]) -> Result<TextureHandle, String> {

@@ -86,13 +86,19 @@ pub enum ListenEnd {
 #[derive(Default, Serialize, Deserialize)]
 pub struct Taste {
     songs: HashMap<String, SongStats>,
+    /// The user's most-scrobbled artists on Last.fm (all their devices and
+    /// players), best first: they count as favorites here too.
+    #[serde(default)]
+    scrobbled: Vec<String>,
 }
 
 impl Taste {
     pub fn has_history(&self) -> bool {
-        self.songs
-            .values()
-            .any(|song| song.plays > 0 || song.liked_at.is_some())
+        !self.scrobbled.is_empty()
+            || self
+                .songs
+                .values()
+                .any(|song| song.plays > 0 || song.liked_at.is_some())
     }
 
     pub fn record(&mut self, track: &Track, listened: f64, end: ListenEnd, now: u64) {
@@ -125,6 +131,25 @@ impl Taste {
             None => Some(now),
         };
         song.liked_at.is_some()
+    }
+
+    /// Like or unlike (a change from another device); returns whether it
+    /// changed.
+    pub fn set_like(&mut self, track: &Track, liked: bool, now: u64) -> bool {
+        if self.is_liked(&track.id) == liked {
+            return false;
+        }
+        self.toggle_like(track, now);
+        true
+    }
+
+    /// The user's top artists on Last.fm, best first.
+    pub fn set_scrobbled_artists(&mut self, artists: Vec<String>) -> bool {
+        if self.scrobbled == artists {
+            return false;
+        }
+        self.scrobbled = artists;
+        true
     }
 
     pub fn is_liked(&self, id: &str) -> bool {
@@ -168,6 +193,15 @@ impl Taste {
             let entry = artists
                 .entry(artist.to_lowercase())
                 .or_insert_with(|| (artist, 0.0));
+            entry.1 += score;
+        }
+        // Last.fm's top artists: the first about as loved as a liked song.
+        let count = self.scrobbled.len().max(1) as f64;
+        for (rank, artist) in self.scrobbled.iter().enumerate() {
+            let score = 2.0 + 8.0 * (1.0 - rank as f64 / count);
+            let entry = artists
+                .entry(artist.to_lowercase())
+                .or_insert_with(|| (artist.clone(), 0.0));
             entry.1 += score;
         }
         best(artists.into_values().collect(), limit)

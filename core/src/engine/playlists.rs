@@ -90,6 +90,7 @@ impl Engine {
                 let id = self.new_playlist();
                 self.library.playlists.add(id, track);
             }
+            PlaylistTarget::Download => self.toggle_download(&track),
         }
     }
 
@@ -126,6 +127,7 @@ impl Engine {
             self.queue.enqueue_unique(track);
         }
         self.start_playlist_context(all);
+        self.order.playlist = Some(id);
         self.failed_plays = 0;
         self.start_track(first, true);
     }

@@ -311,6 +311,22 @@ impl Engine {
                     self.browse.artists = result.unwrap_or_default();
                 }
             }
+            LastFmEvent::Loved { user, result } => {
+                if let (true, Ok(loves)) = (
+                    user.eq_ignore_ascii_case(&self.settings.lastfm.username),
+                    result,
+                ) {
+                    self.receive_loves(loves);
+                }
+            }
+            LastFmEvent::TopArtists { user, result } => {
+                if let (true, Ok(artists)) = (
+                    user.eq_ignore_ascii_case(&self.settings.lastfm.username),
+                    result,
+                ) {
+                    self.receive_top_artists(artists);
+                }
+            }
             LastFmEvent::Following { user, result } => {
                 if user.eq_ignore_ascii_case(&self.settings.lastfm.username) {
                     if let Ok(followed) = result {

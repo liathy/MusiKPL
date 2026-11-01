@@ -166,6 +166,15 @@ pub(crate) use musikpl_core::domain::PlaylistTarget;
 
 /// The "Add to playlist" list, for right-click menus and the player bar.
 /// Playlists that already have the song show a check and can't be picked.
+/// Which songs are downloaded or downloading, shared through egui's data
+/// for the song menus.
+#[derive(Clone, Default)]
+pub(crate) struct DownloadMarks(
+    pub(crate) std::sync::Arc<std::collections::HashMap<String, musikpl_core::engine::DownloadMark>>,
+);
+
+pub(crate) const DOWNLOAD_MARKS: &str = "download_marks";
+
 pub(crate) fn add_to_playlist_menu(
     ui: &mut Ui,
     playlists: &crate::domain::Playlists,
@@ -175,6 +184,32 @@ pub(crate) fn add_to_playlist_menu(
     let theme = Theme::default();
     let mut picked = None;
     ui.set_min_width(r.rem(14.0));
+    // Download, from the same menu (the app shares which songs are
+    // downloaded each frame).
+    if !track_id.is_empty() {
+        let marks = ui
+            .ctx()
+            .data(|data| data.get_temp::<DownloadMarks>(egui::Id::new(DOWNLOAD_MARKS)))
+            .unwrap_or_default();
+        let label = match marks.0.get(track_id) {
+            Some(musikpl_core::engine::DownloadMark::Done) => "✓ Downloaded (remove)".to_owned(),
+            Some(musikpl_core::engine::DownloadMark::Downloading(done)) => {
+                format!("Downloading {}% (cancel)", done / 10)
+            }
+            Some(_) => "Waiting to download (cancel)".to_owned(),
+            None => "Download".to_owned(),
+        };
+        if ui
+            .add(
+                egui::Button::new(egui::RichText::new(label).font(fonts::body(r.rem(0.9375))))
+                    .frame(false),
+            )
+            .clicked()
+        {
+            picked = Some(PlaylistTarget::Download);
+        }
+        ui.separator();
+    }
     ui.label(
         egui::RichText::new("Add to playlist")
             .font(fonts::body(r.rem(0.8125)))
@@ -720,10 +755,30 @@ pub(crate) fn invite_popup(
     icons: &IconTextures,
     r: &ResponsiveUi,
 ) -> Option<bool> {
+    let text = format!("{name} invited you to a Jam");
+    ask_popup(
+        ctx,
+        area,
+        ("jam_invite_popup", name, &text, "Join"),
+        icons,
+        r,
+    )
+}
+
+/// A question floating above the player bar, with a photo for `name`, a
+/// yes button and Not now. Returns Some(true) for yes, Some(false) for Not
+/// now.
+pub(crate) fn ask_popup(
+    ctx: &egui::Context,
+    area: Rect,
+    (key, name, text, yes): (&str, &str, &str, &str),
+    icons: &IconTextures,
+    r: &ResponsiveUi,
+) -> Option<bool> {
     use crate::ui::widgets::{pill_button, PillKind, PillSize};
     let theme = Theme::default();
     let width = r.rem(22.0).min(area.width() - r.rem(3.0));
-    egui::Area::new(Id::new("jam_invite_popup"))
+    egui::Area::new(Id::new(key))
         .order(egui::Order::Foreground)
         .fixed_pos(pos2(area.right() - r.rem(1.5), area.bottom() - r.rem(1.5)))
         .pivot(Align2::RIGHT_BOTTOM)
@@ -744,7 +799,7 @@ pub(crate) fn invite_popup(
                             ui.spacing_mut().item_spacing.y = r.rem(0.5);
                             ui.add(
                                 egui::Label::new(
-                                    egui::RichText::new(format!("{name} invited you to a Jam"))
+                                    egui::RichText::new(text)
                                         .font(fonts::display(r.rem(1.0625)))
                                         .color(theme.text),
                                 )
@@ -752,7 +807,7 @@ pub(crate) fn invite_popup(
                             );
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = r.rem(0.5);
-                                if pill_button(ui, "Join", PillKind::Primary, PillSize::Small, r)
+                                if pill_button(ui, yes, PillKind::Primary, PillSize::Small, r)
                                     .clicked()
                                 {
                                     answer = Some(true);

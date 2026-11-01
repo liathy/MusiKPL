@@ -6,6 +6,6 @@ mod track;
 
 pub use cover::{youtube_thumbnail, Cover, CoverArt};
 pub use media::YtEntry;
-pub use playlist::{Playlist, PlaylistTarget, Playlists};
+pub use playlist::{Playlist, PlaylistTarget, Playlists, Tombstone, Transition};
 pub use song::{artist_candidates, song_info, SongInfo};
 pub use track::{format_position, youtube_mix_url, Track};

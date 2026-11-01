@@ -456,6 +456,54 @@ fn parse_profile_tracks(value: Option<&Value>) -> Vec<ProfileTrack> {
         .collect()
 }
 
+/// A song the user loved on Last.fm.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Loved {
+    pub artist: String,
+    pub title: String,
+}
+
+/// The user's loved songs, newest first.
+pub fn loved(api_key: &str, user: &str) -> Result<Vec<Loved>, String> {
+    let value = call(
+        "user.getLovedTracks",
+        api_key,
+        vec![("user", user.into()), ("limit", "500".into())],
+    )?;
+    Ok(parse_loved(
+        value.get("lovedtracks").and_then(|v| v.get("track")),
+    ))
+}
+
+fn parse_loved(value: Option<&Value>) -> Vec<Loved> {
+    list(value)
+        .into_iter()
+        .filter_map(|track| {
+            let artist = text(track.get("artist").and_then(|a| a.get("name")));
+            let title = text(track.get("name"));
+            (!artist.is_empty() && !title.is_empty()).then_some(Loved { artist, title })
+        })
+        .collect()
+}
+
+/// The user's most-scrobbled artists of the last months, best first.
+pub fn top_artists(api_key: &str, user: &str) -> Result<Vec<String>, String> {
+    let value = call(
+        "user.getTopArtists",
+        api_key,
+        vec![
+            ("user", user.into()),
+            ("period", "6month".into()),
+            ("limit", "30".into()),
+        ],
+    )?;
+    Ok(list(value.get("topartists").and_then(|v| v.get("artist")))
+        .into_iter()
+        .map(|artist| text(artist.get("name")))
+        .filter(|name| !name.is_empty())
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub use crate::audio::FadeCurve;
 use crate::storage;
 
 const FILE: &str = "settings.json";
@@ -28,7 +29,33 @@ pub struct Settings {
     pub invite_popups: bool,
     pub shuffle: ShuffleMode,
     pub repeat: RepeatMode,
+    pub crossfade: Crossfade,
 }
+
+/// Fading songs into each other (Settings → Playback).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Crossfade {
+    pub enabled: bool,
+    /// 1 to 12.
+    pub seconds: u8,
+    pub curve: FadeCurve,
+    /// Also fade (briefly) when skipping to the next song.
+    pub on_skip: bool,
+}
+
+impl Default for Crossfade {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            seconds: 6,
+            curve: FadeCurve::Smooth,
+            on_skip: true,
+        }
+    }
+}
+
+pub const MAX_CROSSFADE: u8 = 12;
 
 /// The order songs play in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +115,7 @@ impl Default for Settings {
             invite_popups: true,
             shuffle: ShuffleMode::Off,
             repeat: RepeatMode::Off,
+            crossfade: Crossfade::default(),
         }
     }
 }

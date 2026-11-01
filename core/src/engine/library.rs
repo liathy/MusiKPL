@@ -94,7 +94,7 @@ impl Library {
         self.home_rx.is_some()
     }
 
-    fn taste_changed(&mut self) {
+    pub(super) fn taste_changed(&mut self) {
         self.taste_changed = true;
         self.liked = self.taste.liked(LOCAL_ROW);
         self.recent = self.taste.recently_played(LOCAL_ROW);
@@ -119,6 +119,10 @@ impl Engine {
         self.library.taste = storage::read(TASTE_FILE).unwrap_or_default();
         self.library.home = storage::read(HOME_FILE).unwrap_or_default();
         self.library.playlists = storage::read(PLAYLISTS_FILE).unwrap_or_default();
+        // Playlists from before syncing get their permanent ids.
+        if self.library.playlists.ensure_uids() {
+            self.library.playlists_changed = true;
+        }
         self.library.taste_changed();
         self.library.taste_changed = false;
         self.player.volume = self.settings.volume;
@@ -310,6 +314,7 @@ impl Engine {
     pub fn toggle_like(&mut self, track: &Track) {
         let liked = self.library.taste.toggle_like(track, unix_now());
         self.library.taste_changed();
+        self.note_local_like(track, liked);
         if let Some(credentials) = self.credentials() {
             self.lastfm.submit(LastFmJob::Love {
                 credentials,
@@ -339,7 +344,8 @@ impl Engine {
     /// Rebuild Home in the background when it is old, or when asked to.
     /// Before the first-run genre picker is done there is nothing to go on.
     pub fn refresh_home(&mut self, force: bool) {
-        if self.library.building_home() {
+        // Offline, Home keeps what it has (and shows the downloads).
+        if self.library.building_home() || self.offline() {
             return;
         }
         let now = unix_now();

@@ -16,9 +16,12 @@ use std::{
 };
 
 use musikpl_core::{
-    audio::{AudioOutput, PositionSample},
-    domain::{song_info, PlaylistTarget, Track},
-    engine::{AppError, Engine, LastFmConnect, SongIntent, View, NOTICE_DURATION},
+    audio::{AudioOutput, Fade, FadeCurve, PositionSample},
+    domain::{song_info, PlaylistTarget, Track, Transition},
+    engine::{
+        AppError, DownloadMark, Engine, LastFmConnect, LyricsStatus, SongIntent, View,
+        NOTICE_DURATION,
+    },
     extractor::Extractor,
     jam::{DiscoveryStatus, Progress, Role},
     lastfm::{browse::Period, built_in_keys},
@@ -76,6 +79,46 @@ pub trait AndroidPlayer: Send + Sync {
     fn position(&self) -> Option<f64>;
     /// The stream ended, or failed while playing.
     fn is_finished(&self) -> bool;
+    /// Start `url` while the song playing fades out over `seconds`.
+    fn crossfade(
+        &self,
+        url: String,
+        volume: u8,
+        start_secs: f64,
+        seconds: f64,
+        curve: FadeShape,
+    ) -> Option<String>;
+}
+
+/// How songs fade into each other (see `FadeCurve`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum FadeShape {
+    Linear,
+    Smooth,
+    EqualPower,
+    Exponential,
+}
+
+impl From<FadeCurve> for FadeShape {
+    fn from(curve: FadeCurve) -> Self {
+        match curve {
+            FadeCurve::Linear => Self::Linear,
+            FadeCurve::Smooth => Self::Smooth,
+            FadeCurve::EqualPower => Self::EqualPower,
+            FadeCurve::Exponential => Self::Exponential,
+        }
+    }
+}
+
+impl From<FadeShape> for FadeCurve {
+    fn from(shape: FadeShape) -> Self {
+        match shape {
+            FadeShape::Linear => Self::Linear,
+            FadeShape::Smooth => Self::Smooth,
+            FadeShape::EqualPower => Self::EqualPower,
+            FadeShape::Exponential => Self::Exponential,
+        }
+    }
 }
 
 /// Finds songs and their audio. See `musikpl_core::extractor` for the
@@ -99,6 +142,24 @@ pub trait AndroidPlatform: Send + Sync {
 struct ExoOutput(Arc<dyn AndroidPlayer>);
 
 impl AudioOutput for ExoOutput {
+    fn crossfade(
+        &mut self,
+        url: &str,
+        volume: u8,
+        start_secs: f64,
+        fade: Fade,
+    ) -> Result<(), String> {
+        match self.0.crossfade(
+            url.to_owned(),
+            volume,
+            start_secs,
+            fade.seconds,
+            fade.curve.into(),
+        ) {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
     fn play(&mut self, url: &str, volume: u8, start_secs: f64, paused: bool) -> Result<(), String> {
         match self.0.play(url.to_owned(), volume, start_secs, paused) {
             Some(error) => Err(error),
@@ -353,6 +414,65 @@ pub struct PlaylistDetail {
     /// Songs to add, found from the ones in it.
     pub suggestions: Vec<Song>,
     pub suggestions_loading: bool,
+    pub transition: TransitionInfo,
+    /// Kept downloaded for offline.
+    pub downloaded: bool,
+    /// Its songs saved so far.
+    pub saved: u32,
+}
+
+/// Downloads: what's saved, what's coming, and whether we're offline.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct DownloadsInfo {
+    pub songs: Vec<Song>,
+    /// Ids of songs downloaded.
+    pub saved_ids: Vec<String>,
+    /// Ids waiting or downloading.
+    pub pending_ids: Vec<String>,
+    /// The song downloading now, and how far (percent).
+    pub current: Option<String>,
+    pub percent: u32,
+    pub offline: bool,
+    pub notice: Option<String>,
+    /// Megabytes used.
+    pub megabytes: u64,
+}
+
+/// A playlist's crossfade: as in Settings, off, or its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum TransitionKind {
+    Default,
+    Off,
+    Fade,
+}
+
+#[derive(Clone, Copy, Debug, uniffi::Record)]
+pub struct TransitionInfo {
+    pub kind: TransitionKind,
+    pub seconds: u8,
+    pub curve: FadeShape,
+}
+
+impl From<Transition> for TransitionInfo {
+    fn from(transition: Transition) -> Self {
+        match transition {
+            Transition::Default => Self {
+                kind: TransitionKind::Default,
+                seconds: 6,
+                curve: FadeShape::Smooth,
+            },
+            Transition::Off => Self {
+                kind: TransitionKind::Off,
+                seconds: 6,
+                curve: FadeShape::Smooth,
+            },
+            Transition::Fade { seconds, curve } => Self {
+                kind: TransitionKind::Fade,
+                seconds,
+                curve: curve.into(),
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug, uniffi::Record)]
@@ -429,6 +549,10 @@ pub struct SettingsState {
     pub lastfm_one_click: bool,
     pub error: Option<String>,
     pub bookmarks: Vec<Bookmark>,
+    pub crossfade: bool,
+    pub crossfade_seconds: u8,
+    pub crossfade_curve: FadeShape,
+    pub crossfade_on_skip: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -660,6 +784,13 @@ impl MobileEngine {
             songs: songs(&playlist.tracks),
             suggestions: engine.playlist_recs().into_iter().map(Song::of).collect(),
             suggestions_loading: engine.playlist_recs.loading(),
+            transition: playlist.transition.into(),
+            downloaded: engine.playlist_downloaded(id),
+            saved: playlist
+                .tracks
+                .iter()
+                .filter(|t| engine.downloads.is_downloaded(&t.id))
+                .count() as u32,
         })
     }
 
@@ -827,6 +958,10 @@ impl MobileEngine {
             },
             lastfm_one_click: built_in_keys().is_some(),
             error: engine.settings_error.clone(),
+            crossfade: engine.settings.crossfade.enabled,
+            crossfade_seconds: engine.settings.crossfade.seconds,
+            crossfade_curve: engine.settings.crossfade.curve.into(),
+            crossfade_on_skip: engine.settings.crossfade.on_skip,
             bookmarks,
         }
     }
@@ -1175,6 +1310,29 @@ impl MobileEngine {
     pub fn clear_history(&self) {
         self.engine().clear_history();
     }
+
+    pub fn set_crossfade(&self, enabled: bool, seconds: u8, curve: FadeShape, on_skip: bool) {
+        self.engine()
+            .set_crossfade(enabled, seconds, curve.into(), on_skip);
+    }
+
+    pub fn set_playlist_transition(
+        &self,
+        id: i64,
+        kind: TransitionKind,
+        seconds: u8,
+        curve: FadeShape,
+    ) {
+        let transition = match kind {
+            TransitionKind::Default => Transition::Default,
+            TransitionKind::Off => Transition::Off,
+            TransitionKind::Fade => Transition::Fade {
+                seconds,
+                curve: curve.into(),
+            },
+        };
+        self.engine().set_playlist_transition(id as u64, transition);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1268,6 +1426,49 @@ pub struct FriendsState {
     pub invites: Vec<FriendInvite>,
     /// Invites show as a pop-up (else quietly in the list).
     pub invite_popups: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum LyricsKind {
+    Idle,
+    Loading,
+    Synced,
+    Plain,
+    Instrumental,
+    Missing,
+    Failed,
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct LyricLine {
+    /// Seconds into the song (0 for plain lyrics).
+    pub at: f64,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct LyricsState {
+    pub kind: LyricsKind,
+    pub lines: Vec<LyricLine>,
+    pub error: Option<String>,
+}
+
+/// One of the user's devices: linked, or asking to be.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct DeviceItem {
+    pub id: String,
+    pub name: String,
+    /// None: not checked yet.
+    pub online: Option<bool>,
+    pub synced: bool,
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct DevicesState {
+    pub linked: Vec<DeviceItem>,
+    /// Devices of the same Last.fm user asking to link (Link or Not now).
+    pub prompts: Vec<DeviceItem>,
+    pub notice: Option<String>,
 }
 
 #[uniffi::export]
@@ -1479,6 +1680,133 @@ impl MobileEngine {
 
     pub fn remove_lastfm_friend(&self, user: String) {
         self.engine().remove_lastfm_friend(&user);
+    }
+
+    /// The lyrics screen shows (lyrics are looked up only then).
+    pub fn show_lyrics(&self, shown: bool) {
+        self.engine().show_lyrics(shown);
+    }
+
+    pub fn retry_lyrics(&self) {
+        self.engine().retry_lyrics();
+    }
+
+    /// Changes when the lyrics do (song or status): fetch `lyrics()` then.
+    pub fn lyrics_key(&self) -> String {
+        let engine = self.engine();
+        let state = match &engine.lyrics.status {
+            LyricsStatus::Idle => "idle",
+            LyricsStatus::Loading => "loading",
+            LyricsStatus::Found(_) => "found",
+            LyricsStatus::Missing => "missing",
+            LyricsStatus::Failed(_) => "failed",
+        };
+        format!("{}:{state}", engine.lyrics.id)
+    }
+
+    pub fn lyrics(&self) -> LyricsState {
+        let engine = self.engine();
+        let (kind, lines, error) = match &engine.lyrics.status {
+            LyricsStatus::Idle => (LyricsKind::Idle, Vec::new(), None),
+            LyricsStatus::Loading => (LyricsKind::Loading, Vec::new(), None),
+            LyricsStatus::Missing => (LyricsKind::Missing, Vec::new(), None),
+            LyricsStatus::Failed(error) => (LyricsKind::Failed, Vec::new(), Some(error.clone())),
+            LyricsStatus::Found(found) if found.is_synced() => (
+                LyricsKind::Synced,
+                found
+                    .synced
+                    .iter()
+                    .map(|line| LyricLine {
+                        at: line.at,
+                        text: line.text.clone(),
+                    })
+                    .collect(),
+                None,
+            ),
+            LyricsStatus::Found(found) if !found.plain.is_empty() => (
+                LyricsKind::Plain,
+                found
+                    .plain
+                    .iter()
+                    .map(|text| LyricLine {
+                        at: 0.0,
+                        text: text.clone(),
+                    })
+                    .collect(),
+                None,
+            ),
+            LyricsStatus::Found(_) => (LyricsKind::Instrumental, Vec::new(), None),
+        };
+        LyricsState { kind, lines, error }
+    }
+
+    /// The line being sung, for synced lyrics.
+    pub fn lyrics_line(&self) -> Option<u32> {
+        self.engine().lyrics_line().map(|line| line as u32)
+    }
+
+    pub fn downloads(&self) -> DownloadsInfo {
+        let engine = self.engine();
+        let state = &engine.downloads;
+        let marks = state.marks();
+        DownloadsInfo {
+            songs: state.songs.iter().map(Song::of).collect(),
+            saved_ids: state
+                .index
+                .songs
+                .iter()
+                .map(|s| s.track.id.clone())
+                .collect(),
+            pending_ids: marks
+                .iter()
+                .filter(|(_, mark)| **mark != DownloadMark::Done)
+                .map(|(id, _)| id.clone())
+                .collect(),
+            current: state.current().map(|(track, _)| track.title.clone()),
+            percent: state.current().map_or(0, |(_, done)| done / 10),
+            offline: engine.offline(),
+            notice: state.notice().map(str::to_owned),
+            megabytes: state.index.total_bytes() / (1024 * 1024),
+        }
+    }
+
+    /// Download a song, or remove its download (or stop it).
+    pub fn toggle_download(&self, song: Song) {
+        let track = song.track();
+        self.engine().toggle_download(&track);
+    }
+
+    pub fn toggle_playlist_download(&self, id: i64) {
+        self.engine().toggle_playlist_download(id as u64);
+    }
+
+    /// The user's devices that sync playlists, and link requests.
+    pub fn devices(&self) -> DevicesState {
+        let engine = self.engine();
+        let state = &engine.devices;
+        let item = |id: &str, name: &str| DeviceItem {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            online: engine.friends.online.get(id).copied(),
+            synced: state.synced_at.contains_key(id),
+        };
+        DevicesState {
+            linked: state.linked.iter().map(|d| item(&d.id, &d.name)).collect(),
+            prompts: state.prompts.iter().map(|p| item(&p.id, &p.name)).collect(),
+            notice: state.notice().map(str::to_owned),
+        }
+    }
+
+    pub fn accept_device_link(&self, id: String) {
+        self.engine().accept_link(&id);
+    }
+
+    pub fn decline_device_link(&self, id: String) {
+        self.engine().decline_link(&id);
+    }
+
+    pub fn unlink_device(&self, index: u32) {
+        self.engine().unlink_device(index as usize);
     }
 }
 

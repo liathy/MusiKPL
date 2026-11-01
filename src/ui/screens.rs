@@ -659,3 +659,31 @@ pub(crate) fn error_toast(
         })
         .inner
 }
+
+/// A small line of status at the bottom left of the main area.
+pub(crate) fn status_pill(ctx: &egui::Context, area: Rect, text: &str, r: &ResponsiveUi) {
+    let theme = Theme::default();
+    egui::Area::new(Id::new("status_pill"))
+        .order(egui::Order::Foreground)
+        .interactable(false)
+        .fixed_pos(pos2(area.left() + r.rem(1.5), area.bottom() - r.rem(1.0)))
+        .pivot(Align2::LEFT_BOTTOM)
+        .show(ctx, |ui| {
+            egui::Frame::none()
+                .fill(theme.panel)
+                .stroke(Stroke::new(1.0_f32, theme.border))
+                .rounding(r.rem(1.0))
+                .inner_margin(egui::Margin::symmetric(r.rem(0.875), r.rem(0.375)))
+                .show(ui, |ui| {
+                    ui.set_max_width(area.width() * 0.6);
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(text)
+                                .font(fonts::body(r.rem(0.8125)))
+                                .color(theme.secondary_text),
+                        )
+                        .truncate(),
+                    );
+                });
+        });
+}

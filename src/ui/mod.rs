@@ -1,10 +1,12 @@
 pub(crate) mod artist;
+pub(crate) mod crossfade;
 pub(crate) mod fonts;
 pub(crate) mod footer;
 pub(crate) mod home;
 pub(crate) mod icons;
 pub(crate) mod jam;
 pub(crate) mod layout;
+pub(crate) mod lyrics;
 pub(crate) mod menu;
 pub(crate) mod overlays;
 pub(crate) mod playlist;

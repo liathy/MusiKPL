@@ -355,3 +355,22 @@ fun InvitePopup() {
         },
     )
 }
+
+/** One of the user's devices asking to link (same Last.fm account). */
+@Composable
+fun DeviceLinkPopup() {
+    val devices by Core.devices.collectAsStateWithLifecycle()
+    val prompt = devices?.prompts?.firstOrNull() ?: return
+    AlertDialog(
+        onDismissRequest = { Core.act { declineDeviceLink(prompt.id) } },
+        containerColor = Palette.panel,
+        title = { Text("Link with ${prompt.name}?", style = MaterialTheme.typography.titleLarge) },
+        text = { Text("Your playlists will stay in sync on both, whenever they're open.", color = Palette.secondary) },
+        confirmButton = {
+            TextButton(onClick = { Core.act { acceptDeviceLink(prompt.id) } }) { Text("Link", color = Color.White) }
+        },
+        dismissButton = {
+            TextButton(onClick = { Core.act { declineDeviceLink(prompt.id) } }) { Text("Not now") }
+        },
+    )
+}

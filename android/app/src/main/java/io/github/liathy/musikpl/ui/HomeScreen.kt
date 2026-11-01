@@ -73,6 +73,7 @@ fun HomeScreen(nav: Nav) {
                     IconAction(R.drawable.ic_refresh, "Refresh", { Core.act { refreshHome() } })
                 }
             }
+            item { DownloadStatus() }
             if (state.rows.isEmpty()) {
                 item {
                     Text(
@@ -179,4 +180,27 @@ fun Loading(modifier: Modifier = Modifier.fillMaxSize()) {
     Box(modifier, contentAlignment = Alignment.Center) {
         CircularProgressIndicator(color = Palette.secondary, strokeWidth = 2.dp, modifier = Modifier.size(28.dp))
     }
+}
+
+/** Offline, or downloads under way: one line under the title. */
+@Composable
+private fun DownloadStatus() {
+    val downloads by Core.downloads.collectAsStateWithLifecycle()
+    val state = downloads ?: return
+    val text = when {
+        state.offline -> "You're offline · your downloads still play"
+        state.notice != null -> state.notice
+        state.current != null -> {
+            val more = state.pendingIds.size - 1
+            "Downloading ${state.current} · ${state.percent}%" + if (more > 0) " · $more more" else ""
+        }
+        else -> null
+    } ?: return
+    Text(
+        text,
+        style = MaterialTheme.typography.bodySmall,
+        color = if (state.offline) Palette.text else Palette.secondary,
+        maxLines = 1,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+    )
 }

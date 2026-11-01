@@ -129,7 +129,7 @@ impl Engine {
 
     /// Called every frame: start a refill when the queue runs low.
     pub fn keep_mix_filled(&mut self) {
-        if self.is_guest() || !self.auto_mix || self.automix.busy() {
+        if self.is_guest() || !self.auto_mix || self.automix.busy() || self.offline() {
             return;
         }
         // Repeating: the same songs come back instead of new ones.

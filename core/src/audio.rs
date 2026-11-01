@@ -13,6 +13,57 @@ pub struct PositionSample {
     pub taken: Instant,
 }
 
+/// How a song fades into the next.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum FadeCurve {
+    /// Straight, evenly.
+    Linear,
+    /// Slow at both ends, quick in the middle.
+    #[default]
+    Smooth,
+    /// Keeps the loudness even through the mix (DJ style).
+    EqualPower,
+    /// The new song comes in late and strong.
+    Exponential,
+}
+
+impl FadeCurve {
+    pub const ALL: [FadeCurve; 4] = [
+        FadeCurve::Smooth,
+        FadeCurve::EqualPower,
+        FadeCurve::Linear,
+        FadeCurve::Exponential,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Linear => "Linear",
+            Self::Smooth => "Smooth",
+            Self::EqualPower => "Equal power",
+            Self::Exponential => "Late",
+        }
+    }
+
+    /// The incoming song's loudness of the way through (0 to 1); the
+    /// outgoing one follows `gain(1 - t)`.
+    pub fn gain(self, t: f64) -> f64 {
+        let t = t.clamp(0.0, 1.0);
+        match self {
+            Self::Linear => t,
+            Self::Smooth => (1.0 - (std::f64::consts::PI * t).cos()) / 2.0,
+            Self::EqualPower => (std::f64::consts::FRAC_PI_2 * t).sin(),
+            Self::Exponential => t * t,
+        }
+    }
+}
+
+/// A crossfade: how long, and how.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fade {
+    pub seconds: f64,
+    pub curve: FadeCurve,
+}
+
 pub trait AudioOutput: Send {
     /// Start `url` at `start_secs`, optionally paused, at `volume` (0–100).
     fn play(&mut self, url: &str, volume: u8, start_secs: f64, paused: bool) -> Result<(), String>;
@@ -29,6 +80,18 @@ pub trait AudioOutput: Send {
     fn reports_position(&self) -> bool;
     /// The stream ended (or the player quit).
     fn is_finished(&mut self) -> bool;
+    /// Start `url` while the song playing fades out and this one fades in.
+    /// Outputs that can't play two streams at once just switch.
+    fn crossfade(
+        &mut self,
+        url: &str,
+        volume: u8,
+        start_secs: f64,
+        fade: Fade,
+    ) -> Result<(), String> {
+        let _ = fade;
+        self.play(url, volume, start_secs, false)
+    }
 }
 
 /// Plays nothing: tests, and the moment before the platform's output exists.

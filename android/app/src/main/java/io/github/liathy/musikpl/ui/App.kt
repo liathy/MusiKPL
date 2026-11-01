@@ -182,6 +182,7 @@ fun App(onLeave: () -> Unit) {
         PlayerSheet(nav, onClose = { playerOpen = false })
     }
     InvitePopup()
+    DeviceLinkPopup()
     UpdatePrompt()
     menuSong?.let { song -> SongMenu(song, nav, onClose = { menuSong = null }) }
     menuLastFm?.let { (artist, title) ->
@@ -311,6 +312,21 @@ fun SongMenu(song: Song, nav: Nav, onClose: () -> Unit) {
                     onClose()
                 }
                 MenuItem(R.drawable.ic_playlist_add, "Add to playlist") { picking = true }
+                val downloads by Core.downloads.collectAsStateWithLifecycle()
+                val saved = downloads?.savedIds?.contains(song.id) == true
+                val pending = downloads?.pendingIds?.contains(song.id) == true
+                MenuItem(
+                    R.drawable.ic_download,
+                    when {
+                        saved -> "Remove download"
+                        pending -> "Cancel download"
+                        else -> "Download"
+                    },
+                    tint = if (saved) Palette.success else Palette.icon,
+                ) {
+                    Core.act { toggleDownload(song) }
+                    onClose()
+                }
                 MenuItem(R.drawable.ic_artist, "Go to artist") {
                     nav.songArtist(song)
                     onClose()

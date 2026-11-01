@@ -39,6 +39,8 @@ pub struct PlayOrder {
     pub context: Vec<Track>,
     /// `context` is a playlist (else it grows as songs play).
     pub from_playlist: bool,
+    /// The playlist playing, for its crossfade.
+    pub playlist: Option<u64>,
     /// The queue's order before shuffling (song ids), to go back to.
     unshuffled: Option<Vec<String>>,
     /// Songs Smart Shuffle added to the queue.

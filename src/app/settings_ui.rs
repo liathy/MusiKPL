@@ -41,9 +41,21 @@ impl YtMusicApp {
             auto_mix: engine.auto_mix,
             close_to_tray: engine.settings.close_to_tray,
             invite_popups: engine.settings.invite_popups,
+            crossfade: engine.settings.crossfade,
             lastfm,
             one_click: built_in_keys().is_some(),
             error: engine.settings_error.as_deref(),
+            devices: engine
+                .devices
+                .linked
+                .iter()
+                .map(|device| overlays::DeviceRow {
+                    name: &device.name,
+                    online: engine.friends.online.get(&device.id).copied(),
+                    synced: engine.devices.synced_at.contains_key(&device.id),
+                })
+                .collect(),
+            devices_notice: engine.devices.notice(),
         };
         let actions = overlays::show_settings(
             ctx,
@@ -65,12 +77,17 @@ impl YtMusicApp {
             SettingsAction::Close => self.settings_open = false,
             SettingsAction::SetAutoMix(enabled) => self.set_auto_mix(enabled),
             SettingsAction::SetInvitePopups(enabled) => self.engine.set_invite_popups(enabled),
+            SettingsAction::SetCrossfade(c) => {
+                self.engine
+                    .set_crossfade(c.enabled, c.seconds, c.curve, c.on_skip);
+            }
             SettingsAction::SetCloseToTray(enabled) => {
                 self.settings.close_to_tray = enabled;
                 self.save_settings();
             }
             SettingsAction::ClearHistory => self.engine.clear_history(),
             SettingsAction::PickGenres => self.pick_genres(),
+            SettingsAction::UnlinkDevice(index) => self.engine.unlink_device(index),
             SettingsAction::Page(page) => {
                 self.settings_page = page;
                 self.settings_error = None;

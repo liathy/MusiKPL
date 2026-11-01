@@ -22,6 +22,9 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import uniffi.musikpl_mobile.FadeShape
+import uniffi.musikpl_mobile.TransitionInfo
+import uniffi.musikpl_mobile.TransitionKind
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -55,6 +58,7 @@ fun PlaylistScreen(nav: Nav) {
     var deleting by remember { mutableStateOf(false) }
     var songMenu by remember { mutableStateOf<Pair<Int, Song>?>(null) }
     var coverMenu by remember { mutableStateOf(false) }
+    var transitions by remember { mutableStateOf(false) }
 
     // A picked photo waits in the crop step until saved.
     var cropping by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
@@ -100,7 +104,8 @@ fun PlaylistScreen(nav: Nav) {
                     modifier = Modifier.clickable { renaming = true },
                 )
                 Text(
-                    if (playlist.songs.size == 1) "1 song" else "${playlist.songs.size} songs",
+                    (if (playlist.songs.size == 1) "1 song" else "${playlist.songs.size} songs") +
+                        if (playlist.downloaded) " · ${playlist.saved} downloaded" else "",
                     style = MaterialTheme.typography.bodyMedium,
                     color = Palette.secondary,
                 )
@@ -119,6 +124,14 @@ fun PlaylistScreen(nav: Nav) {
                             },
                         )
                     }
+                    IconAction(
+                        R.drawable.ic_download,
+                        if (playlist.downloaded) "Remove download" else "Download",
+                        { Core.act { togglePlaylistDownload(playlist.id) } },
+                        tint = if (playlist.downloaded) Palette.success else Palette.icon,
+                        size = 22.dp,
+                    )
+                    IconAction(R.drawable.ic_crossfade, "Transitions", { transitions = true }, size = 22.dp)
                     IconAction(R.drawable.ic_edit, "Rename", { renaming = true }, size = 20.dp)
                     IconAction(
                         if (playlist.favorite) R.drawable.ic_heart_filled else R.drawable.ic_heart,
@@ -215,6 +228,9 @@ fun PlaylistScreen(nav: Nav) {
             onCancel = { cropping = null },
         )
     }
+    if (transitions) {
+        TransitionsSheet(playlist.id, playlist.transition) { transitions = false }
+    }
     if (renaming) {
         NameDialog("Rename playlist", playlist.name, onDone = { name ->
             renaming = false
@@ -235,5 +251,35 @@ fun PlaylistScreen(nav: Nav) {
             },
             dismissButton = { TextButton(onClick = { deleting = false }) { Text("Cancel") } },
         )
+    }
+}
+
+/** How a playlist's songs fade into each other. */
+@Composable
+private fun TransitionsSheet(id: Long, transition: TransitionInfo, onClose: () -> Unit) {
+    fun set(kind: TransitionKind, seconds: UByte = transition.seconds, curve: FadeShape = transition.curve) {
+        Core.act { setPlaylistTransition(id, kind, seconds, curve) }
+    }
+    ModalBottomSheet(onDismissRequest = onClose, containerColor = Palette.panel) {
+        Column(Modifier.padding(start = 20.dp, end = 20.dp, bottom = 32.dp)) {
+            Text("Transitions", style = MaterialTheme.typography.titleLarge)
+            Text(
+                "How this playlist's songs fade into each other.",
+                style = MaterialTheme.typography.bodySmall,
+                color = Palette.secondary,
+            )
+            Spacer(Modifier.size(16.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Pill("As in Settings", { set(TransitionKind.DEFAULT) }, primary = transition.kind == TransitionKind.DEFAULT)
+                Pill("No fade", { set(TransitionKind.OFF) }, primary = transition.kind == TransitionKind.OFF)
+                Pill("Its own", { set(TransitionKind.FADE) }, primary = transition.kind == TransitionKind.FADE)
+            }
+            if (transition.kind == TransitionKind.FADE) {
+                Spacer(Modifier.size(16.dp))
+                FadeControls(transition.seconds, transition.curve) { seconds, curve ->
+                    set(TransitionKind.FADE, seconds, curve)
+                }
+            }
+        }
     }
 }

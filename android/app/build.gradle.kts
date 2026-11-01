@@ -51,6 +51,12 @@ android {
             val release = signingConfigs.getByName("release")
             signingConfig = if (release.storeFile != null) release else signingConfigs.getByName("debug")
         }
+        debug {
+            // Test builds use the release key when it's here, so they install
+            // over a released app (and back) without uninstalling.
+            val release = signingConfigs.getByName("release")
+            if (release.storeFile != null) signingConfig = release
+        }
     }
 
     compileOptions {

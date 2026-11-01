@@ -26,6 +26,7 @@ pub(crate) enum FooterAction {
     Seek(f64),
     SetVolume(u8),
     ToggleQueue,
+    ToggleLyrics,
     ToggleLike,
     AddToPlaylist(PlaylistTarget),
     ToggleMute,
@@ -49,6 +50,7 @@ pub(crate) struct FooterState<'a> {
     /// Jam guests follow the host and cannot control playback.
     pub(crate) guest: bool,
     pub(crate) queue_open: bool,
+    pub(crate) lyrics_open: bool,
     pub(crate) liked: bool,
     pub(crate) playlists: &'a Playlists,
     pub(crate) shuffle: ShuffleMode,
@@ -525,8 +527,36 @@ fn volume_and_queue(
     let queue_size = r.rem(3.75);
     let gap = r.rem(1.5625);
     // Against the right edge, mirroring the song info on the left.
+    let lyrics_size = r.rem(2.25);
     let left = column.right() - r.rem(1.5) - queue_size - gap - group_width;
     let center_y = column.center().y;
+
+    // Lyrics button, before the volume.
+    let lyrics_rect = Rect::from_center_size(
+        pos2(left - r.rem(0.75) - lyrics_size / 2.0, center_y),
+        egui::Vec2::splat(lyrics_size),
+    );
+    let lyrics = ui.interact(lyrics_rect, Id::new("footer_lyrics"), Sense::click());
+    let mut colors = ButtonColors::ghost(theme);
+    if state.lyrics_open {
+        colors.fill = theme.surface;
+    }
+    paint_icon_button(
+        ui,
+        lyrics_rect,
+        &lyrics,
+        &icons.lyrics,
+        r.rem2(1.25, 1.25),
+        lyrics_size / 2.0,
+        colors,
+    );
+    if lyrics
+        .on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text("Lyrics")
+        .clicked()
+    {
+        actions.push(FooterAction::ToggleLyrics);
+    }
 
     // Speaker icon (its waves follow the level; click to mute) and slider,
     // like Spotify.

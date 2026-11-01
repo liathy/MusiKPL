@@ -6,12 +6,17 @@
 //! the user's actions into calls to its methods.
 
 mod automix;
+mod crossfade;
+mod devices;
+mod downloads;
 mod errors;
 mod friends;
 mod home_paging;
 mod jam_sync;
 mod lastfm_browse;
+mod lastfm_sync;
 mod library;
+mod lyrics;
 mod navigation;
 mod playlist_recs;
 mod playlists;
@@ -19,12 +24,15 @@ mod settings;
 mod shuffle;
 
 pub use automix::AutoMix;
+pub use devices::{DevicesState, LinkPrompt, LinkedDevice};
+pub use downloads::{DownloadMark, DownloadsState};
 pub use errors::AppError;
 pub use friends::{Friend, FriendsState, ReceivedInvite};
 pub use home_paging::HomePaging;
 pub use jam_sync::{track_from, GuestSync, NOTICE_DURATION};
 pub use lastfm_browse::{Bookmark, Browse, Photos, SongIntent};
 pub use library::{unix_now, Library};
+pub use lyrics::{LyricsState, LyricsStatus};
 pub use navigation::{Navigation, Page};
 pub use playlist_recs::PlaylistRecs;
 pub use playlists::playlist_cover;
@@ -151,6 +159,12 @@ pub struct Engine {
     pub browse: Browse,
     /// Friends: who's online in MusiKPL, and Jam invites.
     pub friends: FriendsState,
+    /// Likes kept in step with Last.fm loves.
+    pub loves: lastfm_sync::LovesSync,
+    /// The playing song's lyrics, while shown.
+    pub lyrics: LyricsState,
+    /// The user's other devices, linked to sync playlists.
+    pub devices: DevicesState,
     /// Text for the shell to put on the clipboard.
     pub clipboard: Option<String>,
     pub settings: Settings,
@@ -167,6 +181,11 @@ pub struct Engine {
     pub nav: Navigation,
     /// Shuffle, Smart Shuffle and Repeat.
     pub order: PlayOrder,
+    /// The next song starts with this crossfade (the one playing keeps
+    /// going under it).
+    pub pending_fade: Option<crate::audio::Fade>,
+    /// Songs and playlists saved for offline listening.
+    pub downloads: DownloadsState,
 }
 
 /// An extractor for an engine that hasn't got one (tests, and before the
@@ -237,6 +256,9 @@ impl Engine {
             preload: None,
             browse: Browse::default(),
             friends: FriendsState::default(),
+            loves: lastfm_sync::LovesSync::default(),
+            lyrics: LyricsState::default(),
+            devices: DevicesState::default(),
             clipboard: None,
             settings: Settings::default(),
             settings_error: None,
@@ -247,6 +269,8 @@ impl Engine {
             stale_images: Vec::new(),
             nav: Navigation::default(),
             order: PlayOrder::default(),
+            pending_fade: None,
+            downloads: DownloadsState::default(),
         }
     }
 
@@ -257,6 +281,8 @@ impl Engine {
         self.load_library();
         self.load_browse();
         self.load_friends();
+        self.load_devices();
+        self.load_downloads();
         self.prefetch_profile();
         if !self.settings.onboarded && !self.library.taste.has_history() {
             self.genre_picks = Some(Vec::new());
@@ -278,8 +304,13 @@ impl Engine {
         self.keep_playlist_recs();
         self.tick_browse();
         self.tick_friends();
+        self.tick_devices();
+        self.tick_lastfm_sync();
+        self.tick_lyrics();
+        self.tick_downloads();
         self.track_page();
         self.preload_next();
+        self.tick_crossfade();
         self.handle_finished_track();
         self.poll_mix();
         self.keep_mix_filled();
@@ -331,7 +362,10 @@ impl Engine {
     }
 
     pub fn start_track_at(&mut self, track: Track, remember_current: bool, start_at: f64) {
-        self.player.stop();
+        // Crossfading: the song playing goes on under the next one.
+        if self.pending_fade.is_none() {
+            self.player.stop();
+        }
         self.resume_at = None;
         self.start_at = start_at;
         self.loading = true;
@@ -342,6 +376,15 @@ impl Engine {
         self.finished_handled = false;
         let (sender, receiver) = mpsc::channel();
         self.play_rx = Some(receiver);
+        // Downloaded: play the file.
+        if let Some(path) = self.local_file(&track.id) {
+            let _ = sender.send(Ok((track, path, remember_current)));
+            return;
+        }
+        if self.offline() {
+            let _ = sender.send(Err("You're offline, and this song isn't downloaded".into()));
+            return;
+        }
         // Looked up ahead of time: start without waiting for the extractor.
         if let Some(url) = self.take_preloaded(&track.id) {
             let _ = sender.send(Ok((track, url, remember_current)));
@@ -396,6 +439,10 @@ impl Engine {
         let Some(next) = self.queue.iter().next().cloned() else {
             return;
         };
+        // Downloaded songs need no lookup; offline, none is possible.
+        if self.offline() || self.local_file(&next.id).is_some() {
+            return;
+        }
         let current = self
             .preload
             .as_ref()
@@ -423,12 +470,23 @@ impl Engine {
         if self.is_guest() {
             return;
         }
+        // The user skipped while a song plays: fade quickly when allowed.
+        if self.pending_fade.is_none() && !self.finished_handled {
+            self.pending_fade = self.skip_fade();
+        }
         if let Some(track) = self.queue.pop_next() {
             self.play_queue_track(track);
             return;
         }
         // Repeat all: what's being listened to starts over.
         if self.repeat_context() {
+            if let Some(track) = self.queue.pop_next() {
+                self.play_queue_track(track);
+                return;
+            }
+        }
+        // Offline: the downloads, shuffled.
+        if self.fill_queue_offline() {
             if let Some(track) = self.queue.pop_next() {
                 self.play_queue_track(track);
                 return;
@@ -521,7 +579,11 @@ impl Engine {
                     // have loaded it, so everyone hears the start together.
                     let hold = self.should_hold_for_guests();
                     let start_at = std::mem::take(&mut self.start_at);
-                    match self.player.play_stream_at(&track, &url, start_at, hold) {
+                    let started = match self.pending_fade.take() {
+                        Some(fade) if !hold => self.player.crossfade_stream(&url, start_at, fade),
+                        _ => self.player.play_stream_at(&track, &url, start_at, hold),
+                    };
+                    match started {
                         Ok(()) => {
                             self.jam_hold = hold.then(Instant::now);
                             self.error = None;
@@ -531,7 +593,12 @@ impl Engine {
                         Err(e) => self.skip_failed_track(e),
                     }
                 }
-                Err(e) => self.skip_failed_track(e),
+                Err(e) => {
+                    if self.pending_fade.take().is_some() {
+                        self.player.stop();
+                    }
+                    self.skip_failed_track(e);
+                }
             }
         }
     }
@@ -587,6 +654,7 @@ impl Engine {
             || self.browse.busy()
             || self.library.building_home()
             || self.order.busy()
+            || self.downloads.pending() > 0
     }
 
     /// How long until the next tick is needed when nothing animates.
@@ -596,6 +664,10 @@ impl Engine {
             Some(Role::Host) => JAM_HOST_TICK,
             // The clock and seek bar move, and the end of a song must be
             // noticed promptly to start the next one.
+            // Lyrics light up line by line.
+            None if self.lyrics.wanted && self.current.is_some() && !self.player.paused => {
+                JAM_HOST_TICK
+            }
             None if self.current.is_some() && !self.player.paused => PLAYING_TICK,
             // Background work reports through channels polled each tick.
             None if self.busy() => PLAYING_TICK,
@@ -704,6 +776,23 @@ impl Engine {
     /// the first two built rows, Liked songs, the other built rows, and
     /// Recently played.
     pub fn home_rows_full(&self) -> Vec<(&str, &[Track], Option<u64>)> {
+        // Offline: what can play, the downloads and downloaded playlists.
+        if self.offline() {
+            let mut rows: Vec<(&str, &[Track], Option<u64>)> = Vec::new();
+            if !self.downloads.songs.is_empty() {
+                rows.push(("Downloaded", &self.downloads.songs, None));
+            }
+            rows.extend(
+                self.library
+                    .playlists
+                    .iter()
+                    .filter(|p| {
+                        self.downloads.index.playlists.contains(&p.uid) && !p.tracks.is_empty()
+                    })
+                    .map(|p| (p.name.as_str(), p.tracks.as_slice(), Some(p.id))),
+            );
+            return rows;
+        }
         let built = &self.library.home.rows;
         let split = built.len().min(2);
         let mut rows: Vec<(&str, &[Track], Option<u64>)> = self
@@ -726,6 +815,9 @@ impl Engine {
         );
         if !self.library.liked.is_empty() {
             rows.push(("Liked songs", &self.library.liked, None));
+        }
+        if !self.downloads.songs.is_empty() {
+            rows.push(("Downloaded", &self.downloads.songs, None));
         }
         rows.extend(
             built[split..]
