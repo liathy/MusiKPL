@@ -68,6 +68,15 @@ lto = false
 codegen-units = 16
 incremental = true
 
+# Release-quality Android engine (scripts\build-android.ps1) built without
+# thin LTO and with parallel codegen units: several times faster to compile,
+# optimized the same way, and a little larger than [profile.release].
+[profile.release-android]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+
 # Compressing the bundled tools in build.rs is slow without optimizations.
 [profile.release.build-override]
 opt-level = 3

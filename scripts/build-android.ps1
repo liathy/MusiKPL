@@ -27,7 +27,7 @@ if (-not $env:JAVA_HOME) {
 }
 $app = Join-Path $root 'android'
 $jniLibs = Join-Path $app 'app\src\main\jniLibs'
-$profile = if ($Quick) { 'quick' } else { 'release' }
+$profile = if ($Quick) { 'quick' } else { 'release-android' }
 
 Push-Location $root
 try {
