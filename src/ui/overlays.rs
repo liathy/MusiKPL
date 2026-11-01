@@ -999,8 +999,12 @@ fn general_page(
     page_heading(ui, "General", None, r);
     if switch_card(
         ui,
-        "Start with Windows",
-        "Open MusiKPL automatically when you sign in to Windows.",
+        if cfg!(windows) {
+            "Start with Windows"
+        } else {
+            "Start on login"
+        },
+        "Open MusiKPL automatically when you sign in.",
         view.start_with_windows,
         r,
     ) {

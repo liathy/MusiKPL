@@ -31,12 +31,14 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time"
 # Invite codes (already in the dependency tree through ureq).
 base64 = "0.22"
 raw-window-handle = "0.6"
-windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_UI_Shell", "Win32_UI_Controls_Dialogs"] }
 # Unpacks the mpv and yt-dlp bundled into release builds (already used by
 # the image decoders, pure Rust).
 miniz_oxide = "0.8"
 # Checks Windows fallback fonts before egui loads them (already used by egui).
 ab_glyph = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_UI_Shell", "Win32_UI_Controls_Dialogs"] }
 
 [build-dependencies]
 miniz_oxide = "0.8"
@@ -46,6 +48,14 @@ lto = "thin"
 codegen-units = 1
 opt-level = "z"
 strip = true
+
+# Test builds (scripts\build-release.ps1 -Quick): release behaviour, built
+# much faster, without whole-program optimization. Releases use [profile.release].
+[profile.quick]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
 
 # Compressing the bundled tools in build.rs is slow without optimizations.
 [profile.release.build-override]

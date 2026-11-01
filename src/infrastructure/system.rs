@@ -287,7 +287,7 @@ pub(crate) fn starts_with_windows() -> bool {
     }
     #[cfg(not(windows))]
     {
-        false
+        linux_autostart::file().is_some_and(|file| file.is_file())
     }
 }
 
@@ -298,7 +298,43 @@ pub(crate) fn set_start_with_windows(enabled: bool) -> Result<(), String> {
     }
     #[cfg(not(windows))]
     {
-        let _ = enabled;
-        Err("Starting with the system is only supported on Windows".into())
+        linux_autostart::set(enabled)
+    }
+}
+
+/// Linux desktops start the programs listed in ~/.config/autostart.
+#[cfg(not(windows))]
+mod linux_autostart {
+    use std::path::PathBuf;
+
+    pub(super) fn file() -> Option<PathBuf> {
+        let config = std::env::var_os("XDG_CONFIG_HOME")
+            .filter(|dir| !dir.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
+        Some(config.join("autostart").join("musikpl.desktop"))
+    }
+
+    pub(super) fn set(enabled: bool) -> Result<(), String> {
+        let file = file().ok_or("Couldn't find your config folder")?;
+        if !enabled {
+            return match std::fs::remove_file(&file) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    Err(format!("Couldn't turn off starting on login ({error})"))
+                }
+                _ => Ok(()),
+            };
+        }
+        let exe = std::env::current_exe().map_err(|e| format!("Couldn't find MusiKPL ({e})"))?;
+        let entry = format!(
+            "[Desktop Entry]\nType=Application\nName=MusiKPL\nComment=Music player\nExec=\"{}\"\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
+            exe.display()
+        );
+        if let Some(folder) = file.parent() {
+            std::fs::create_dir_all(folder)
+                .map_err(|e| format!("Couldn't turn on starting on login ({e})"))?;
+        }
+        std::fs::write(&file, entry)
+            .map_err(|e| format!("Couldn't turn on starting on login ({e})"))
     }
 }

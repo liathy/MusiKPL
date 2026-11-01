@@ -21,7 +21,8 @@ MusiKPL brings music discovery, queue management, automatic mixes, synchronized 
 - **Playlists** — Create playlists from the menu, add songs with **+** (or right-click) on any song, the queue, or the player bar, and drag songs to reorder them. Give a playlist your own cover photo, ♥ it to show it on Home, and get **Recommended songs** based on what's already in it. Deleting needs a 3-second hold, so it never happens by accident.
 - **Like Songs** — Choose ♥ Like from a song's **+** menu, or press ♥ in the player bar or the queue.
 - **Smooth Song Changes** — The next song in the queue is prepared in the background while the current one plays, so it starts right away.
-- **Every Language** — Titles in Japanese, Chinese, Korean, Russian, Arabic, Thai, Hindi and more show properly, using Windows' own fonts, loaded only when a title needs them.
+- **Every Language** — Titles in Japanese, Chinese, Korean, Russian, Arabic, Thai, Hindi and more show properly, using the system's own fonts, loaded only when a title needs them.
+- **Windows and Linux** — A Windows installer and portable exe, and a Linux binary for Ubuntu and other desktops.
 - **Docked Menu and Queue** — The menu (left) and queue (right) open beside the music instead of over it, so you can keep browsing and playing with them open.
 - **Picks Up Where You Left Off** — Your volume, Auto Mix choice, queue, and last song are remembered. The last song waits, paused, where you stopped; nothing loads until you press play.
 - **Auto Mix** — On by default; switch it in **Settings → General**. Keeps the queue filled with songs like the one playing, leaning toward your taste: songs you keep skipping are left out and your favorite artists move up. It refills in the background before the queue runs out, falls back to the artist's songs when YouTube has no Mix, retries when a search fails, and skips songs you've already heard. Songs you add with **+** play first and are kept when you start a new mix.
@@ -53,16 +54,29 @@ From the latest [**GitHub Release**](https://github.com/liathy/MusiKPL/releases)
 
 Both update themselves from the menu's **Check for updates**. Your data is never touched by installing, updating, or reinstalling. If MusiKPL is open when you run the setup, the setup closes it first (it saves everything as it closes).
 
+### Linux (Ubuntu and others)
+
+Download **`MusiKPL-linux-x86_64`** from the same release. It runs on Ubuntu 20.04 and newer (and other 64-bit Linux desktops, X11 or Wayland). On Linux MusiKPL uses the system's `mpv` and `yt-dlp`:
+
+```bash
+sudo apt install mpv pipx
+pipx install yt-dlp            # Ubuntu's own yt-dlp package is usually too old for YouTube
+chmod +x MusiKPL-linux-x86_64
+./MusiKPL-linux-x86_64
+```
+
+Optional extras: `sudo apt install zenity` to choose playlist cover photos, and `fonts-noto-cjk` for Japanese, Chinese and Korean titles. **Check for updates** updates the Linux binary in place, **Settings → Start on login** adds MusiKPL to your desktop's autostart, and your data lives in `~/.local/share/MusiKPL`.
+
 ### Requirements
 
-- **Windows** — The release target.
+- **Windows 10/11** or **64-bit Linux**.
 - **Internet connection** — Required for searching and streaming online music.
 
 `mpv` and `yt-dlp` are bundled inside `MusiKPL.exe`. On first launch they are unpacked once to `%LOCALAPPDATA%\MusiKPL\tools` and reused afterwards; a newer MusiKPL release replaces them. The unpacked `yt-dlp` updates itself weekly, because YouTube changes often. To use your own versions instead, place `mpv.exe` and/or `yt-dlp.exe` next to `MusiKPL.exe`.
 
 ### Settings
 
-Everything MusiKPL remembers is in `%APPDATA%\MusiKPL`, as small JSON files:
+Everything MusiKPL remembers is in `%APPDATA%\MusiKPL` (on Linux, `~/.local/share/MusiKPL`), as small JSON files:
 
 | File | What it holds |
 | --- | --- |
@@ -136,6 +150,16 @@ To build both release files (`MusiKPL.exe` and `MusiKPL-Setup.exe`) into `dist`:
 ```
 
 Put MusiKPL's Last.fm API key in `lastfm-api-key.txt` in the project root first (ignored by git), or set `MUSIKPL_LASTFM_KEY`. It is built into the app for genres. Builds without it still work; users then need their own key for those.
+
+For trying changes, `.\scripts\build-release.ps1 -Quick` builds only `dist\MusiKPL.exe` in seconds instead of minutes (no whole-program optimization; releases don't use it).
+
+To build the Linux binary (`dist\MusiKPL-linux-x86_64`) from Windows, start Docker Desktop and run:
+
+```powershell
+.\scripts\build-linux.ps1
+```
+
+On Linux itself, `cargo build --release -p MusiKPL` works directly.
 
 ### Run in development
 

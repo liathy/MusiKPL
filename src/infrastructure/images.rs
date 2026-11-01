@@ -51,8 +51,39 @@ pub(crate) fn pick_image() -> Option<PathBuf> {
         let length = file.iter().position(|&c| c == 0).unwrap_or(file.len());
         Some(PathBuf::from(String::from_utf16_lossy(&file[..length])))
     }
+    // Linux: the desktop's own file picker, GNOME's zenity or KDE's kdialog.
     #[cfg(not(windows))]
     {
+        use std::process::Command;
+        let pickers: [(&str, &[&str]); 2] = [
+            (
+                "zenity",
+                &[
+                    "--file-selection",
+                    "--title=Choose a playlist cover",
+                    "--file-filter=Images | *.jpg *.jpeg *.png *.webp",
+                ],
+            ),
+            (
+                "kdialog",
+                &[
+                    "--getopenfilename",
+                    ".",
+                    "Images (*.jpg *.jpeg *.png *.webp)",
+                ],
+            ),
+        ];
+        for (program, args) in pickers {
+            match Command::new(program).args(args).output() {
+                Ok(output) => {
+                    let chosen = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+                    // Cancelled, or chose nothing.
+                    return (output.status.success() && !chosen.is_empty())
+                        .then(|| PathBuf::from(chosen));
+                }
+                Err(_) => continue, // Not installed: try the next one.
+            }
+        }
         None
     }
 }

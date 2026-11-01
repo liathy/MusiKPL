@@ -117,6 +117,11 @@ fn launch(exe: &std::path::Path) -> Result<(), String> {
 }
 
 /// Wait (at most 20 s) for process `pid` to exit.
+#[cfg(not(windows))]
+fn wait_for_exit(_pid: u32) {}
+
+/// Wait (at most 20 s) for process `pid` to exit.
+#[cfg(windows)]
 fn wait_for_exit(pid: u32) {
     use windows_sys::Win32::{
         Foundation::CloseHandle,

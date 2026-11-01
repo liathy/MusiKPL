@@ -19,7 +19,13 @@ use serde_json::Value;
 
 const LATEST_RELEASE: &str = "https://api.github.com/repos/liathy/MusiKPL/releases/latest";
 pub(crate) const SETUP_ASSET: &str = "MusiKPL-Setup.exe";
-const PORTABLE_ASSET: &str = "MusiKPL.exe";
+/// The release file that replaces this build: the Windows exe, or the
+/// Linux binary.
+pub(crate) const PORTABLE_ASSET: &str = if cfg!(windows) {
+    "MusiKPL.exe"
+} else {
+    "MusiKPL-linux-x86_64"
+};
 /// Argument for a freshly updated portable copy: wait for this process id.
 pub(crate) const AFTER_UPDATE_ARG: &str = "--after-update";
 
@@ -165,16 +171,22 @@ pub(crate) fn install(release: &Release, progress: &AtomicU32) -> Result<(), Str
     let url = release
         .portable_url
         .as_ref()
-        .ok_or("This release has no MusiKPL.exe to update with")?;
-    let exe = std::env::current_exe().map_err(|e| format!("Couldn't find MusiKPL.exe ({e})"))?;
-    let new = exe.with_extension("exe.new");
+        .ok_or_else(|| format!("This release has no {PORTABLE_ASSET} to update with"))?;
+    let exe = std::env::current_exe().map_err(|e| format!("Couldn't find MusiKPL ({e})"))?;
+    let new = beside(&exe, "new");
     download(url, &new, progress)?;
-    let old = exe.with_extension("exe.old");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&new, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("Couldn't make the update runnable ({e})"))?;
+    }
+    let old = beside(&exe, "old");
     let _ = std::fs::remove_file(&old);
-    std::fs::rename(&exe, &old).map_err(|e| format!("Couldn't replace MusiKPL.exe ({e})"))?;
+    std::fs::rename(&exe, &old).map_err(|e| format!("Couldn't replace MusiKPL ({e})"))?;
     if let Err(error) = std::fs::rename(&new, &exe) {
         let _ = std::fs::rename(&old, &exe);
-        return Err(format!("Couldn't replace MusiKPL.exe ({error})"));
+        return Err(format!("Couldn't replace MusiKPL ({error})"));
     }
     Command::new(&exe)
         .args([AFTER_UPDATE_ARG, &pid])
@@ -183,10 +195,18 @@ pub(crate) fn install(release: &Release, progress: &AtomicU32) -> Result<(), Str
     Ok(())
 }
 
+/// MusiKPL.exe → MusiKPL.exe.old, MusiKPL → MusiKPL.old.
+fn beside(exe: &Path, suffix: &str) -> PathBuf {
+    let mut name = exe.file_name().unwrap_or_default().to_os_string();
+    name.push(".");
+    name.push(suffix);
+    exe.with_file_name(name)
+}
+
 /// After a portable update: remove the previous exe that was moved aside.
 pub(crate) fn clean_up_previous_version() {
     if let Ok(exe) = std::env::current_exe() {
-        let _ = std::fs::remove_file(exe.with_extension("exe.old"));
+        let _ = std::fs::remove_file(beside(&exe, "old"));
     }
 }
 
@@ -207,10 +227,14 @@ pub(crate) fn wait_for_exit(pid: u32) {
             }
         }
     }
+    // Linux: the process is gone once /proc no longer lists it.
     #[cfg(not(windows))]
     {
-        let _ = pid;
-        std::thread::sleep(Duration::from_secs(2));
+        let started = std::time::Instant::now();
+        let alive = Path::new("/proc").join(pid.to_string());
+        while alive.exists() && started.elapsed() < Duration::from_secs(20) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 }
 
@@ -233,6 +257,7 @@ mod tests {
         let value: Value = serde_json::from_str(
             r#"{"tag_name":"v2.3.0","draft":false,"assets":[
                 {"name":"MusiKPL.exe","browser_download_url":"https://github.com/x/MusiKPL.exe"},
+                {"name":"MusiKPL-linux-x86_64","browser_download_url":"https://github.com/x/MusiKPL-linux-x86_64"},
                 {"name":"MusiKPL-Setup.exe","browser_download_url":"https://github.com/x/MusiKPL-Setup.exe"}
             ]}"#,
         )
@@ -252,6 +277,18 @@ mod tests {
         )
         .unwrap();
         assert!(parse_release(&insecure).unwrap().portable_url.is_none());
+    }
+
+    #[test]
+    fn swapped_files_sit_beside_the_program() {
+        assert_eq!(
+            beside(Path::new("/opt/MusiKPL"), "old"),
+            Path::new("/opt/MusiKPL.old")
+        );
+        assert_eq!(
+            beside(Path::new(r"C:\x\MusiKPL.exe"), "new"),
+            Path::new(r"C:\x\MusiKPL.exe.new")
+        );
     }
 
     #[test]

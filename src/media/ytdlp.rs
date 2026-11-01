@@ -16,12 +16,21 @@ pub(crate) struct Tools {
     pub(crate) yt_dlp: PathBuf,
 }
 
+/// The tools' file names on this system.
+pub(crate) const MPV: &str = if cfg!(windows) { "mpv.exe" } else { "mpv" };
+pub(crate) const YT_DLP: &str = if cfg!(windows) {
+    "yt-dlp.exe"
+} else {
+    "yt-dlp"
+};
+
 impl Tools {
     /// Find mpv and yt-dlp, in order of preference:
     ///
-    /// 1. Beside MusiKPL.exe, so a user can supply their own versions.
-    /// 2. The copies bundled inside release builds, unpacked once.
+    /// 1. Beside MusiKPL, so a user can supply their own versions.
+    /// 2. The copies bundled inside Windows release builds, unpacked once.
     /// 3. In development builds, the project root.
+    /// 4. Installed on the system (in `PATH`), as on Linux.
     pub(crate) fn discover() -> Self {
         let beside_exe = std::env::current_exe()
             .ok()
@@ -31,6 +40,9 @@ impl Tools {
         folders.extend(bundled::unpack());
         #[cfg(debug_assertions)]
         folders.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+        if let Some(path) = std::env::var_os("PATH") {
+            folders.extend(std::env::split_paths(&path));
+        }
 
         let find = |name: &str| {
             folders
@@ -40,27 +52,30 @@ impl Tools {
                 .unwrap_or_else(|| beside_exe.join(name))
         };
         Self {
-            mpv: find("mpv.exe"),
-            yt_dlp: find("yt-dlp.exe"),
+            mpv: find(MPV),
+            yt_dlp: find(YT_DLP),
         }
     }
 
     pub(crate) fn ready(&self) -> Result<(), String> {
-        if !self.mpv.exists() || !self.yt_dlp.exists() {
-            return Err(format!(
-                "MusiKPL couldn't find its playback tools. Place mpv.exe and yt-dlp.exe next to MusiKPL.exe. Missing: {}{}",
-                if self.mpv.exists() { "" } else { "mpv.exe " },
-                if self.yt_dlp.exists() {
-                    ""
-                } else {
-                    "yt-dlp.exe"
-                }
-            ));
+        if self.mpv.exists() && self.yt_dlp.exists() {
+            return Ok(());
         }
-        Ok(())
+        let missing: Vec<&str> = [(MPV, &self.mpv), (YT_DLP, &self.yt_dlp)]
+            .into_iter()
+            .filter(|(_, path)| !path.exists())
+            .map(|(name, _)| name)
+            .collect();
+        let missing = missing.join(" and ");
+        Err(if cfg!(windows) {
+            format!("MusiKPL couldn't find {missing}. Place it next to MusiKPL.exe.")
+        } else {
+            format!(
+                "MusiKPL couldn't find {missing}. Install it (on Ubuntu: sudo apt install mpv, and yt-dlp from https://github.com/yt-dlp/yt-dlp), or place it next to MusiKPL."
+            )
+        })
     }
 }
-
 pub(crate) fn query_ytdlp(
     tools: &Tools,
     query: &str,

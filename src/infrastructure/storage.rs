@@ -1,4 +1,5 @@
-//! MusiKPL's local data: small JSON files in `%APPDATA%\MusiKPL`.
+//! MusiKPL's local data: small JSON files in `%APPDATA%\MusiKPL` on Windows
+//! and `~/.local/share/MusiKPL` on Linux.
 //!
 //! Files are written beside their target and swapped in, so a crash never
 //! leaves a half-written file. Tests use a private temporary folder, so they
@@ -21,10 +22,22 @@ pub(crate) fn data_dir() -> Option<PathBuf> {
     {
         Some(std::env::temp_dir().join(format!("musikpl-test-data-{}", std::process::id())))
     }
-    #[cfg(not(test))]
+    #[cfg(all(not(test), windows))]
     {
-        let base = std::env::var_os("APPDATA").or_else(|| std::env::var_os("HOME"))?;
+        let base = std::env::var_os("APPDATA")?;
         Some(PathBuf::from(base).join("MusiKPL"))
+    }
+    // Linux and others: the XDG data folder, normally ~/.local/share.
+    #[cfg(all(not(test), not(windows)))]
+    {
+        let base = std::env::var_os("XDG_DATA_HOME")
+            .filter(|dir| !dir.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|home| PathBuf::from(home).join(".local").join("share"))
+            })?;
+        Some(base.join("MusiKPL"))
     }
 }
 

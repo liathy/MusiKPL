@@ -55,11 +55,11 @@ impl MpvBackend {
             let payload = format!("{{\"command\":{command}}}\n");
             #[cfg(windows)]
             write_windows_pipe(path, payload.as_bytes());
-            #[cfg(not(windows))]
-            if let Ok(mut pipe) = std::fs::OpenOptions::new().write(true).open(path) {
+            #[cfg(unix)]
+            if let Ok(mut socket) = std::os::unix::net::UnixStream::connect(path) {
                 use std::io::Write;
-                let _ = pipe.write_all(payload.as_bytes());
-                let _ = pipe.flush();
+                let _ = socket.write_all(payload.as_bytes());
+                let _ = socket.flush();
             }
         }
     }
@@ -71,13 +71,17 @@ impl MpvBackend {
             let _ = child.wait();
             self.registry.remove(pid);
         }
+        #[cfg(unix)]
+        if let Some(path) = &self.ipc_path {
+            let _ = std::fs::remove_file(path);
+        }
         self.ipc_path = None;
         self.probe = None;
     }
 
     /// Whether this platform can read MPV's real position.
     pub(crate) fn reports_position(&self) -> bool {
-        cfg!(windows)
+        cfg!(any(windows, unix))
     }
 
     /// The most recent position MPV reported for the current stream.
@@ -97,11 +101,7 @@ impl MpvBackend {
         paused: bool,
     ) -> Result<(), String> {
         self.stop();
-        let pipe_name = format!(
-            "\\\\.\\pipe\\ytmusic-{}-{}",
-            std::process::id(),
-            NEXT_PIPE_ID.fetch_add(1, Ordering::Relaxed)
-        );
+        let pipe_name = ipc_path(NEXT_PIPE_ID.fetch_add(1, Ordering::Relaxed));
         let mut command = Command::new(mpv);
         hide_console(&mut command);
         command.args([
@@ -142,12 +142,26 @@ impl MpvBackend {
     }
 }
 
-#[cfg(not(windows))]
+/// Where mpv listens for commands: a named pipe on Windows, a socket file
+/// in the temporary folder elsewhere.
+fn ipc_path(id: u64) -> String {
+    let name = format!("musikpl-mpv-{}-{id}", std::process::id());
+    if cfg!(windows) {
+        format!(r"\\.\pipe\{name}")
+    } else {
+        std::env::temp_dir()
+            .join(format!("{name}.sock"))
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+#[cfg(not(any(windows, unix)))]
 fn spawn_probe(_pipe_name: &str) -> Option<PositionProbe> {
     None
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, unix))]
 fn spawn_probe(pipe_name: &str) -> Option<PositionProbe> {
     let probe = PositionProbe {
         latest: Arc::new(Mutex::new(None)),
@@ -162,9 +176,33 @@ fn spawn_probe(pipe_name: &str) -> Option<PositionProbe> {
     Some(probe)
 }
 
+/// Open a connection to mpv's command channel: two handles, one to write
+/// requests and one to read replies.
+#[cfg(windows)]
+fn connect_ipc(path: &str) -> std::io::Result<(std::fs::File, std::fs::File)> {
+    let pipe = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)?;
+    let read_half = pipe.try_clone()?;
+    Ok((pipe, read_half))
+}
+
+#[cfg(unix)]
+fn connect_ipc(
+    path: &str,
+) -> std::io::Result<(
+    std::os::unix::net::UnixStream,
+    std::os::unix::net::UnixStream,
+)> {
+    let socket = std::os::unix::net::UnixStream::connect(path)?;
+    let read_half = socket.try_clone()?;
+    Ok((socket, read_half))
+}
+
 /// Ask MPV for `time-pos` a few times per second over its own pipe
 /// connection until playback stops or MPV exits.
-#[cfg(windows)]
+#[cfg(any(windows, unix))]
 fn probe_positions(path: &str, latest: &Mutex<Option<PositionSample>>, stop: &AtomicBool) {
     use std::{
         io::{BufRead, BufReader, Write},
@@ -178,21 +216,14 @@ fn probe_positions(path: &str, latest: &Mutex<Option<PositionSample>>, stop: &At
     const CONNECT_WINDOW: Duration = Duration::from_secs(15);
 
     let started = Instant::now();
-    let mut pipe = loop {
+    let (mut pipe, read_half) = loop {
         if stop.load(Ordering::Relaxed) || started.elapsed() > CONNECT_WINDOW {
             return;
         }
-        match std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(path)
-        {
-            Ok(pipe) => break pipe,
+        match connect_ipc(path) {
+            Ok(halves) => break halves,
             Err(_) => sleep(Duration::from_millis(50)),
         }
-    };
-    let Ok(read_half) = pipe.try_clone() else {
-        return;
     };
     let mut reader = BufReader::new(read_half);
     let mut line = String::new();

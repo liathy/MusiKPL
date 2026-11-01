@@ -1,5 +1,5 @@
 //! Packs mpv.exe and yt-dlp.exe (from the project root) into MusiKPL.exe for
-//! release builds, so the app ships as a single file. Debug builds and tests
+//! Windows release builds, so the app ships as a single file. Debug builds and tests
 //! skip this and use the executables beside them or in the project root.
 
 use std::{env, fs, path::PathBuf};
@@ -10,7 +10,10 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(bundled_tools)");
     let root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("set by cargo"));
     let out = PathBuf::from(env::var("OUT_DIR").expect("set by cargo"));
-    let release = env::var("PROFILE").as_deref() == Ok("release");
+    // Only Windows builds carry mpv.exe and yt-dlp.exe; elsewhere the system's
+    // mpv and yt-dlp are used.
+    let windows = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
+    let release = env::var("PROFILE").as_deref() == Ok("release") && windows;
 
     let mut bundle_id: u64 = 0xcbf2_9ce4_8422_2325;
     let mut complete = release;

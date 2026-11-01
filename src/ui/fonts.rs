@@ -52,6 +52,7 @@ impl Fallback {
         Fallback::Symbols,
     ];
 
+    #[cfg_attr(not(windows), allow(dead_code))]
     fn file(self) -> &'static str {
         match self {
             Fallback::World => "segoeui.ttf",
@@ -61,6 +62,62 @@ impl Fallback {
             Fallback::Korean => "malgun.ttf",
             Fallback::Thai => "LeelawUI.ttf",
             Fallback::Indic => "Nirmala.ttc",
+        }
+    }
+
+    /// Linux font files with the same coverage, best first (Ubuntu ships
+    /// the Noto and DejaVu families; the others are common alternatives).
+    #[cfg_attr(windows, allow(dead_code))]
+    fn linux_files(self) -> &'static [&'static str] {
+        match self {
+            Fallback::World => &[
+                "NotoSans-Regular.ttf",
+                "DejaVuSans.ttf",
+                "NotoSansArabic-Regular.ttf",
+            ],
+            Fallback::Symbols => &[
+                "NotoSansSymbols2-Regular.ttf",
+                "DejaVuSans.ttf",
+                "Symbola.ttf",
+            ],
+            Fallback::Japanese | Fallback::Chinese | Fallback::Korean => &[
+                "NotoSansCJK-Regular.ttc",
+                "NotoSansCJKjp-Regular.otf",
+                "NotoSansCJK-Regular.otf",
+                "wqy-microhei.ttc",
+                "wqy-zenhei.ttc",
+                "DroidSansFallbackFull.ttf",
+                "NanumGothic.ttf",
+            ],
+            Fallback::Thai => &["NotoSansThai-Regular.ttf", "Loma.ttf", "Garuda.ttf"],
+            Fallback::Indic => &["NotoSansDevanagari-Regular.ttf", "Lohit-Devanagari.ttf"],
+        }
+    }
+
+    /// Where this font is on this system, if it is installed.
+    fn path(self) -> Option<std::path::PathBuf> {
+        #[cfg(windows)]
+        {
+            let windows = std::env::var_os("WINDIR")?;
+            let path = std::path::Path::new(&windows)
+                .join("Fonts")
+                .join(self.file());
+            path.exists().then_some(path)
+        }
+        #[cfg(not(windows))]
+        {
+            let mut folders = vec![
+                std::path::PathBuf::from("/usr/share/fonts"),
+                std::path::PathBuf::from("/usr/local/share/fonts"),
+            ];
+            if let Some(home) = std::env::var_os("HOME") {
+                let home = std::path::PathBuf::from(home);
+                folders.push(home.join(".local/share/fonts"));
+                folders.push(home.join(".fonts"));
+            }
+            self.linux_files()
+                .iter()
+                .find_map(|name| folders.iter().find_map(|folder| find_file(folder, name, 4)))
         }
     }
 
@@ -181,12 +238,9 @@ pub(crate) fn cover(ctx: &egui::Context, text: &str) {
         }
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let Some(windows) = std::env::var_os("WINDIR") else {
+            let Some(path) = fallback.path() else {
                 return;
             };
-            let path = std::path::Path::new(&windows)
-                .join("Fonts")
-                .join(fallback.file());
             // egui stops the app on a font it can't read, so check first.
             let readable =
                 |data: &[u8]| ab_glyph::FontRef::try_from_slice_and_index(data, 0).is_ok();
@@ -196,6 +250,23 @@ pub(crate) fn cover(ctx: &egui::Context, text: &str) {
             }
         });
     }
+}
+
+/// Search `folder` and its subfolders (up to `depth` deep) for `name`.
+#[cfg(not(windows))]
+fn find_file(folder: &std::path::Path, name: &str, depth: usize) -> Option<std::path::PathBuf> {
+    let direct = folder.join(name);
+    if direct.is_file() {
+        return Some(direct);
+    }
+    if depth == 0 {
+        return None;
+    }
+    std::fs::read_dir(folder)
+        .ok()?
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .find_map(|entry| find_file(&entry.path(), name, depth - 1))
 }
 
 /// Install fonts that finished loading. Call once per frame, before drawing.
@@ -238,14 +309,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn every_fallback_font_exists_on_windows_and_can_be_read() {
-        let Some(windows) = std::env::var_os("WINDIR") else {
-            return;
-        };
         for fallback in Fallback::ALL {
-            let path = std::path::Path::new(&windows)
-                .join("Fonts")
-                .join(fallback.file());
+            let path = fallback.path().expect("Windows has it");
             let data = std::fs::read(&path).expect("the font is there");
             assert!(
                 ab_glyph::FontRef::try_from_slice_and_index(&data, 0).is_ok(),

@@ -317,6 +317,10 @@ fn firewall_help(
     r: &ResponsiveUi,
     actions: &mut Vec<JamAction>,
 ) {
+    // Windows Firewall only exists on Windows.
+    if !cfg!(windows) {
+        return;
+    }
     let theme = Theme::default();
     hint(ui, text, theme.secondary_text, r);
     if view.firewall_pending {
@@ -755,7 +759,10 @@ mod tests {
             &[],
             &[],
         ));
-        assert!(texts.iter().any(|text| text == "Allow through firewall"));
+        assert_eq!(
+            texts.iter().any(|text| text == "Allow through firewall"),
+            cfg!(windows)
+        );
         let texts = run_panel(&view(
             JamPanelState::Inactive,
             &DiscoveryView::Ready,
@@ -769,7 +776,10 @@ mod tests {
             &[],
             &[],
         ));
-        assert!(texts.iter().any(|text| text == "Allow through firewall"));
+        assert_eq!(
+            texts.iter().any(|text| text == "Allow through firewall"),
+            cfg!(windows)
+        );
         // Hosts can invite people outside the network...
         assert!(texts.iter().any(|text| text == "Create invite"));
         let mut ready = view(
