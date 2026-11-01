@@ -1,8 +1,10 @@
 mod actions;
 mod automix;
 mod errors;
+mod friends;
 mod home_paging;
 mod jam_sync;
+mod lastfm_browse;
 mod library;
 mod playlist_recs;
 mod playlists;
@@ -19,16 +21,18 @@ use crate::{
     recommendations::History,
     theme::Theme,
     ui::{
+        artist::{self, ArtistView},
         footer::{self, FooterState},
         home::{self, HomeAction, HomeRowView, HomeView},
         icons::IconTextures,
         layout::window_layout,
         menu::PlaylistItem,
         menu::PlaylistItemAction,
-        overlays::{self, MenuAction, MenuView, QueueAction, QueueView, SettingsPage},
+        overlays::{self, MenuAction, MenuProfile, MenuView, QueueAction, QueueView, SettingsPage},
         playlist::{self, PlaylistView},
+        profile::{self, ProfileView},
         responsive::ResponsiveUi,
-        screens::{self, CardContext, ResultAction, ResultsView},
+        screens::{self, CardContext, PersonCard, ResultAction, ResultsView},
         topbar::{self, TopBarAction, TopBarState},
     },
 };
@@ -70,6 +74,10 @@ enum View {
     Search,
     /// The playlist in open_playlist.
     Playlist,
+    /// A Last.fm artist's page.
+    Artist,
+    /// The connected Last.fm user's profile and stats.
+    Profile,
 }
 
 struct YtMusicApp {
@@ -128,14 +136,26 @@ struct YtMusicApp {
     /// Which menu cards are expanded.
     menu_playlists_open: bool,
     menu_jam_open: bool,
+    menu_artists_open: bool,
+    menu_friends_open: bool,
     /// The volume to go back to when unmuting.
     unmute_volume: u8,
     /// A playlist cover photo being chosen.
     cover_pick: Option<playlists::CoverPick>,
     /// Songs suggested for the open playlist.
     playlist_recs: playlist_recs::PlaylistRecs,
+    /// The tray icon while MusiKPL is closed to the tray.
+    tray: Option<crate::infrastructure::tray::Tray>,
+    /// Really closing (Quit from the tray, an update): skip close to tray.
+    quitting: bool,
     /// The next song's stream, looked up before the current one ends.
     preload: Option<Preload>,
+    /// Last.fm artists, artist pages, bookmarks, and the user's profile.
+    browse: lastfm_browse::Browse,
+    /// Friends: who's online in MusiKPL, and Jam invites.
+    friends: friends::FriendsState,
+    /// Text to put on the clipboard on the next frame.
+    clipboard: Option<String>,
     settings_page: SettingsPage,
     settings: Settings,
     /// Problem to show on the settings screen.
@@ -211,10 +231,17 @@ impl Default for YtMusicApp {
             playlist_name_draft: String::new(),
             menu_playlists_open: true,
             menu_jam_open: false,
+            menu_artists_open: true,
+            menu_friends_open: true,
             unmute_volume: 100,
             cover_pick: None,
             playlist_recs: Default::default(),
+            tray: None,
+            quitting: false,
             preload: None,
+            browse: Default::default(),
+            friends: Default::default(),
+            clipboard: None,
             settings_page: SettingsPage::General,
             settings: Settings::default(),
             settings_error: None,
@@ -239,6 +266,7 @@ impl YtMusicApp {
         self.searching = true;
         self.error = None;
         self.view = View::Search;
+        self.search_artists(&query);
         self.settings.remember_search(&query);
         self.library.settings_changed = true;
         self.results_query = query.clone();
@@ -517,6 +545,7 @@ impl YtMusicApp {
                 || self.cover_pick.is_some()
                 || self.library.paging.busy()
                 || self.playlist_recs.loading()
+                || self.browse.busy()
                 || self.library.building_home() =>
             {
                 PLAYING_TICK
@@ -586,6 +615,8 @@ impl YtMusicApp {
         let guest = self.is_guest();
         match action {
             ResultAction::ToggleLike(track) => self.toggle_like(&track),
+            ResultAction::OpenArtist(name) => self.open_artist(&name),
+            ResultAction::OpenUser(name) => self.open_user_profile(&name),
             ResultAction::AddToPlaylist(track, target) => self.add_to_playlist(track, target),
             // A guest's picks become requests; only the host's queue plays.
             ResultAction::Play(track) | ResultAction::AddToMix(track) if guest => {
@@ -680,7 +711,14 @@ impl YtMusicApp {
         let mut menu_data = None;
         let mut queue_actions = Vec::new();
         let mut playlist_actions = Vec::new();
+        let mut artist_actions = Vec::new();
+        let mut profile_actions = Vec::new();
         let mut name_draft = std::mem::take(&mut self.playlist_name_draft);
+        // Artist photos are looked up on demand (and queued here), so they
+        // are gathered before drawing borrows the app.
+        let photos = self.gather_photos();
+        let maximized = ctx.input(|input| input.viewport().maximized.unwrap_or(false));
+        let mut resize = None;
         let menu_open = overlays::open_amount(ctx, "menu", self.menu_open);
         let queue_open = overlays::open_amount(ctx, "queue", self.queue_open);
         // The docked panels take their width from the main area, which
@@ -705,6 +743,7 @@ impl YtMusicApp {
                     &TopBarState {
                         menu_open: self.menu_open,
                         home_open: self.view == View::Home,
+                        maximized,
                         recent: &self.settings.recent_searches,
                     },
                     &icons,
@@ -782,6 +821,67 @@ impl YtMusicApp {
                                 in_mix: &in_mix,
                                 liked: &liked,
                                 playlists: &self.library.playlists,
+                                artists: &self.browse.artists,
+                                artist_photos: &photos.search,
+                                people: &self
+                                    .browse
+                                    .people
+                                    .iter()
+                                    .map(|person| PersonCard {
+                                        name: &person.name,
+                                        scrobbles: person.scrobbles,
+                                        avatar: person.image.clone().map(|url| {
+                                            crate::domain::Cover {
+                                                url,
+                                                uv: [0.0, 0.0, 1.0, 1.0],
+                                            }
+                                        }),
+                                    })
+                                    .collect::<Vec<_>>(),
+                            },
+                            &icons,
+                            &r,
+                        );
+                    }
+                    View::Artist => {
+                        artist_actions = artist::show_artist(
+                            ui,
+                            content,
+                            &ArtistView {
+                                name: &self.browse.artist_name,
+                                page: self.browse.artist.as_ref(),
+                                photo: photos.artist.clone(),
+                                bookmarked: self.browse.is_bookmarked(&self.browse.artist_name),
+                                finding_song: self.browse.finding_song(),
+                                similar_photos: photos.similar.clone(),
+                                guest,
+                            },
+                            &icons,
+                            &r,
+                        );
+                    }
+                    View::Profile => {
+                        let is_me = self.browse.profile_user.is_empty() || self.profile_is_mine();
+                        let username = if !is_me {
+                            self.browse.profile_user.as_str()
+                        } else if self.lastfm_connected() {
+                            self.settings.lastfm.username.as_str()
+                        } else {
+                            ""
+                        };
+                        profile_actions = profile::show(
+                            ui,
+                            content,
+                            &ProfileView {
+                                username,
+                                profile: self.browse.profile.as_ref(),
+                                loading: self.browse.profile_loading,
+                                period: self.browse.period,
+                                avatar: photos.avatar.clone(),
+                                artist_photos: photos.top_artists.clone(),
+                                now: library::unix_now(),
+                                is_me,
+                                is_friend: self.friends.is_friend(username),
                             },
                             &icons,
                             &r,
@@ -794,6 +894,7 @@ impl YtMusicApp {
                     // The view borrows the app, so the invite field is
                     // edited on the side and put back afterwards.
                     let mut invite = std::mem::take(&mut self.jam_invite_input);
+                    let mut friend_code = std::mem::take(&mut self.friends.code_input);
                     let actions = overlays::show_menu(
                         ui,
                         layout.main,
@@ -817,12 +918,33 @@ impl YtMusicApp {
                                 })
                                 .collect(),
                             playlists_open: self.menu_playlists_open,
+                            profile: MenuProfile {
+                                username: if self.lastfm_connected() {
+                                    &self.settings.lastfm.username
+                                } else {
+                                    ""
+                                },
+                                scrobbles: self.browse.my_scrobbles,
+                                avatar: photos.my_avatar.clone(),
+                            },
+                            artists: self
+                                .browse
+                                .bookmarks
+                                .iter()
+                                .zip(photos.bookmarks.iter())
+                                .map(|(bookmark, photo)| (bookmark.name.as_str(), photo.clone()))
+                                .collect(),
+                            artists_open: self.menu_artists_open,
+                            friends: self.friends_view(),
+                            friends_open: self.menu_friends_open,
                             update: self.updates.view(),
                         },
                         &mut invite,
+                        &mut friend_code,
                         &r,
                     );
                     self.jam_invite_input = invite;
+                    self.friends.code_input = friend_code;
                     menu_actions = actions;
                     menu_data = Some(data);
                 }
@@ -883,11 +1005,20 @@ impl YtMusicApp {
                     },
                     &r,
                 );
+                // Last, so the edges win over what lies under them.
+                if !maximized {
+                    resize = crate::ui::layout::resize_edges(ui, window);
+                }
             });
 
         for action in top_actions {
             match action {
-                TopBarAction::ToggleMenu => self.menu_open = !self.menu_open,
+                TopBarAction::ToggleMenu => {
+                    self.menu_open = !self.menu_open;
+                    if self.menu_open {
+                        self.refresh_friends();
+                    }
+                }
                 TopBarAction::Home => {
                     self.view = View::Home;
                     self.refresh_home(false);
@@ -902,11 +1033,23 @@ impl YtMusicApp {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true))
                 }
                 TopBarAction::Close => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                TopBarAction::ToggleMaximize => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized))
+                }
             }
         }
         self.playlist_name_draft = name_draft;
         for action in playlist_actions {
             self.apply_playlist_action(action);
+        }
+        if let Some(direction) = resize {
+            ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(direction));
+        }
+        for action in artist_actions {
+            self.apply_artist_action(action);
+        }
+        for action in profile_actions {
+            self.apply_profile_action(action);
         }
         for action in card_actions {
             self.apply_card_action(action);
@@ -940,6 +1083,12 @@ impl YtMusicApp {
                 }
                 MenuAction::TogglePlaylists => self.menu_playlists_open = !self.menu_playlists_open,
                 MenuAction::ToggleJam => self.menu_jam_open = !self.menu_jam_open,
+                MenuAction::ToggleArtists => self.menu_artists_open = !self.menu_artists_open,
+                MenuAction::ToggleFriends => self.menu_friends_open = !self.menu_friends_open,
+                MenuAction::Friend(action) => self.apply_friend_action(action),
+                MenuAction::OpenProfile => self.open_profile(),
+                MenuAction::OpenArtist(name) => self.open_artist(&name),
+                MenuAction::ConnectLastFm => self.connect_lastfm_from_ui(),
                 MenuAction::CheckForUpdates => self.check_for_updates(),
                 MenuAction::InstallUpdate => self.install_update(),
             }
@@ -960,6 +1109,20 @@ impl YtMusicApp {
         }
         for action in footer_actions {
             actions::apply_footer_action(self, action);
+        }
+
+        if let Some(text) = self.clipboard.take() {
+            ctx.copy_text(text);
+        }
+        // A friend's Jam invite, as a pop-up when that's the chosen style.
+        if self.settings.invite_popups {
+            if let Some(invite) = self.friends.invites.first().cloned() {
+                match crate::ui::menu::invite_popup(ctx, content, &invite.name, &icons, &r) {
+                    Some(true) => self.accept_invite(&invite.id),
+                    Some(false) => self.decline_invite(&invite.id),
+                    None => {}
+                }
+            }
         }
 
         if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
@@ -1062,6 +1225,7 @@ impl eframe::App for YtMusicApp {
         self.last_frame = Some(Instant::now());
 
         crate::ui::fonts::apply_loaded(ctx);
+        self.handle_close_to_tray(ctx);
         self.player.refresh_position();
         self.poll_background_work();
         self.poll_jam();
@@ -1071,6 +1235,8 @@ impl eframe::App for YtMusicApp {
         self.poll_cover_pick();
         self.poll_home_paging();
         self.keep_playlist_recs();
+        self.tick_browse();
+        self.tick_friends(ctx);
         self.poll_updates(ctx);
         self.preload_next();
         self.handle_finished_track();
@@ -1125,9 +1291,11 @@ pub fn run() -> eframe::Result<()> {
     let (size, position) = initial_window();
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("MusiKPL")
+        .with_icon(window_icon())
         .with_inner_size(size)
-        .with_resizable(false)
-        .with_maximize_button(false)
+        .with_resizable(true)
+        .with_maximize_button(true)
+        .with_min_inner_size(crate::ui::layout::MIN_WINDOW)
         .with_decorations(false);
     if let Some(position) = position {
         viewport = viewport.with_position(position);
@@ -1147,10 +1315,14 @@ pub fn run() -> eframe::Result<()> {
             let mut app = YtMusicApp::default();
             app.load_settings();
             app.load_library();
+            app.load_browse();
+            app.load_friends();
+            app.prefetch_profile();
             if !app.settings.onboarded && !app.library.taste.has_history() {
                 app.genre_picks = Some(Vec::new());
             }
             app.jam.start_discovery();
+            crate::infrastructure::bundled::download_yt_dlp_in_background();
             crate::infrastructure::bundled::update_yt_dlp_in_background(
                 app.tools.yt_dlp.clone(),
                 app.registry.clone(),
@@ -1158,6 +1330,44 @@ pub fn run() -> eframe::Result<()> {
             Ok(Box::new(app))
         }),
     )
+}
+
+impl YtMusicApp {
+    /// With close to tray on, closing (✕, Alt+F4) hides MusiKPL to the tray
+    /// instead; the tray brings it back or quits.
+    fn handle_close_to_tray(&mut self, ctx: &egui::Context) {
+        use crate::infrastructure::tray::{self, Tray, TrayEvent};
+        let close_requested = ctx.input(|input| input.viewport().close_requested());
+        if close_requested && self.settings.close_to_tray && cfg!(windows) && !self.quitting {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            if self.tray.is_none() {
+                self.tray = Tray::show(ctx);
+            }
+            tray::hide_main_window();
+        }
+        match self.tray.as_ref().and_then(Tray::poll) {
+            Some(TrayEvent::Show) => {
+                self.tray = None;
+                tray::show_main_window();
+            }
+            Some(TrayEvent::Quit) => {
+                self.tray = None;
+                self.quitting = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            None => {}
+        }
+    }
+}
+/// The logo as the window and taskbar icon (drawn from logo.svg at build
+/// time by build_icon.rs).
+pub(crate) fn window_icon() -> egui::IconData {
+    const SIZE: u32 = 256;
+    egui::IconData {
+        rgba: include_bytes!(concat!(env!("OUT_DIR"), "/icon.rgba")).to_vec(),
+        width: SIZE,
+        height: SIZE,
+    }
 }
 
 /// A design-proportioned window that fits the screen, centered on it.
@@ -1190,6 +1400,7 @@ fn round_window_corners(cc: &eframe::CreationContext<'_>) {
         return;
     };
     let hwnd = window.hwnd.get() as HWND;
+    crate::infrastructure::tray::remember_main_window(hwnd);
     let preference = DWMWCP_ROUND;
     // SAFETY: a valid window handle and a pointer to a correctly sized value.
     unsafe {

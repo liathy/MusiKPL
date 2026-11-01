@@ -1,3 +1,4 @@
+pub(crate) mod artist;
 pub(crate) mod fonts;
 pub(crate) mod footer;
 pub(crate) mod home;
@@ -7,6 +8,7 @@ pub(crate) mod layout;
 pub(crate) mod menu;
 pub(crate) mod overlays;
 pub(crate) mod playlist;
+pub(crate) mod profile;
 pub(crate) mod responsive;
 pub(crate) mod screens;
 pub(crate) mod topbar;

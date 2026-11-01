@@ -4,6 +4,9 @@
 
 use std::{env, fs, path::PathBuf};
 
+#[path = "../build_icon.rs"]
+mod icon;
+
 fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("set by cargo"));
     let out = PathBuf::from(env::var("OUT_DIR").expect("set by cargo"));
@@ -35,4 +38,9 @@ fn main() {
         })
         .unwrap_or_else(|| env::var("CARGO_PKG_VERSION").expect("set by cargo"));
     println!("cargo:rustc-env=MUSIKPL_VERSION={version}");
+
+    icon::build(
+        &manifest.parent().expect("project root").join("logo.svg"),
+        &out,
+    );
 }

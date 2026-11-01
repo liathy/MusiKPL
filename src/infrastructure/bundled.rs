@@ -1,4 +1,5 @@
-//! mpv.exe and yt-dlp.exe packed inside release builds of MusiKPL.exe.
+//! mpv.exe and yt-dlp.exe packed inside Windows release builds, and on
+//! Linux, MusiKPL's own downloaded yt-dlp.
 //!
 //! Windows can only start programs from files, so on first run they are
 //! unpacked once to `%LOCALAPPDATA%\MusiKPL\tools` and reused afterwards.
@@ -36,11 +37,101 @@ const PACKED: [(&str, &[u8]); 2] = [
 #[cfg(not(bundled_tools))]
 const PACKED: [(&str, &[u8]); 0] = [];
 
-/// Where the bundled tools are unpacked.
+/// Where MusiKPL keeps its own tools: the bundled ones unpacked on Windows,
+/// and the downloaded yt-dlp on Linux.
 pub(crate) fn tools_dir() -> Option<PathBuf> {
-    let base = std::env::var_os("LOCALAPPDATA").or_else(|| std::env::var_os("APPDATA"))?;
-    Some(PathBuf::from(base).join("MusiKPL").join("tools"))
+    #[cfg(windows)]
+    {
+        let base = std::env::var_os("LOCALAPPDATA").or_else(|| std::env::var_os("APPDATA"))?;
+        Some(PathBuf::from(base).join("MusiKPL").join("tools"))
+    }
+    #[cfg(not(windows))]
+    {
+        super::storage::data_dir().map(|dir| dir.join("tools"))
+    }
 }
+
+/// The official standalone yt-dlp for 64-bit Linux.
+#[cfg(not(windows))]
+const LINUX_YT_DLP_URL: &str =
+    "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux";
+
+/// Linux: MusiKPL's own yt-dlp, kept current, so an outdated system copy
+/// (Ubuntu's package lags far behind YouTube) never breaks playback.
+pub(crate) fn managed_yt_dlp() -> Option<PathBuf> {
+    if cfg!(windows) {
+        return None;
+    }
+    let path = tools_dir()?.join("yt-dlp");
+    path.is_file().then_some(path)
+}
+
+/// Linux: download MusiKPL's own yt-dlp in the background if it isn't there
+/// yet. Until it arrives, a yt-dlp installed on the system is used.
+#[cfg(not(windows))]
+pub(crate) fn download_yt_dlp_in_background() {
+    let Some(dir) = tools_dir() else {
+        return;
+    };
+    let target = dir.join("yt-dlp");
+    if target.is_file() {
+        return;
+    }
+    std::thread::spawn(move || {
+        if let Err(error) = download_yt_dlp(&dir) {
+            eprintln!("Could not download yt-dlp: {error}");
+        }
+    });
+}
+
+/// Download the official Linux yt-dlp into dir as yt-dlp, runnable.
+#[cfg(not(windows))]
+fn download_yt_dlp(dir: &Path) -> Result<(), String> {
+    use std::{io::Read, os::unix::fs::PermissionsExt};
+    let target = dir.join("yt-dlp");
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let response = ureq::get(LINUX_YT_DLP_URL)
+        .call()
+        .map_err(|e| e.to_string())?;
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take(200 * 1024 * 1024)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    // A real program starts with the ELF signature.
+    if !bytes.starts_with(b"\x7fELF") {
+        return Err("the download isn't a Linux program".into());
+    }
+    let partial = dir.join("yt-dlp.part");
+    std::fs::write(&partial, bytes).map_err(|e| e.to_string())?;
+    std::fs::set_permissions(&partial, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| e.to_string())?;
+    std::fs::rename(&partial, &target).map_err(|e| e.to_string())?;
+    // Fresh from GitHub: no update check needed for a week.
+    let _ = std::fs::write(dir.join(UPDATE_STAMP), "ok");
+    Ok(())
+}
+
+#[cfg(all(test, not(windows)))]
+mod linux_tests {
+    /// Downloads the real yt-dlp from GitHub (run with --ignored).
+    #[test]
+    #[ignore]
+    fn the_downloaded_yt_dlp_runs() {
+        let dir = std::env::temp_dir().join(format!("musikpl-ytdlp-{}", std::process::id()));
+        super::download_yt_dlp(&dir).expect("downloads");
+        let output = std::process::Command::new(dir.join("yt-dlp"))
+            .arg("--version")
+            .output()
+            .expect("runs");
+        assert!(output.status.success());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn download_yt_dlp_in_background() {}
 
 /// Make sure this build's tools are unpacked, and return their folder.
 /// `None` when this build carries no tools (debug builds) or unpacking

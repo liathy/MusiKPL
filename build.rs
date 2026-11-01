@@ -4,6 +4,9 @@
 
 use std::{env, fs, path::PathBuf};
 
+#[path = "build_icon.rs"]
+mod icon;
+
 const TOOLS: [&str; 2] = ["mpv.exe", "yt-dlp.exe"];
 
 fn main() {
@@ -44,6 +47,8 @@ fn main() {
         println!("cargo:rustc-cfg=bundled_tools");
     }
     embed_lastfm_key(&root);
+    embed_lastfm_secret(&root);
+    icon::build(&root.join("logo.svg"), &out);
 }
 
 /// MusiKPL's read-only Last.fm API key, from the `MUSIKPL_LASTFM_KEY`
@@ -66,5 +71,27 @@ fn embed_lastfm_key(root: &std::path::Path) {
     println!(
         "cargo:rustc-env=MUSIKPL_LASTFM_KEY={}",
         if valid { key.as_str() } else { "" }
+    );
+}
+
+/// MusiKPL's Last.fm shared secret, from `MUSIKPL_LASTFM_SECRET` or
+/// `lastfm-api-secret.txt` (ignored by git). With it, users connect their
+/// account in one click; without it, they enter their own key and secret.
+fn embed_lastfm_secret(root: &std::path::Path) {
+    let file = root.join("lastfm-api-secret.txt");
+    println!("cargo:rerun-if-changed={}", file.display());
+    println!("cargo:rerun-if-env-changed=MUSIKPL_LASTFM_SECRET");
+    let secret = env::var("MUSIKPL_LASTFM_SECRET")
+        .ok()
+        .or_else(|| fs::read_to_string(&file).ok())
+        .map(|secret| secret.trim().to_owned())
+        .unwrap_or_default();
+    let valid = secret.len() == 32 && secret.bytes().all(|byte| byte.is_ascii_hexdigit());
+    if !secret.is_empty() && !valid {
+        println!("cargo:warning=lastfm-api-secret.txt doesn't hold a 32-character shared secret; ignoring it");
+    }
+    println!(
+        "cargo:rustc-env=MUSIKPL_LASTFM_SECRET={}",
+        if valid { secret.as_str() } else { "" }
     );
 }

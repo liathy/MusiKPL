@@ -31,8 +31,17 @@ New-Item -ItemType Directory -Force $dist | Out-Null
 if ($Quick) {
     cargo build --profile quick -p MusiKPL
     if ($LASTEXITCODE -ne 0) { throw 'Building MusiKPL failed' }
-    Copy-Item (Join-Path $root 'target\quick\MusiKPL.exe') $dist -Force
-    Get-Item (Join-Path $dist 'MusiKPL.exe') | Select-Object Name, @{ n = 'MB'; e = { [math]::Round($_.Length / 1MB, 1) } }
+    $built = Join-Path $root 'target\quick\MusiKPL.exe'
+    $target = Join-Path $dist 'MusiKPL.exe'
+    try {
+        Copy-Item $built $target -Force -ErrorAction Stop
+    } catch {
+        # dist\MusiKPL.exe is open, and Windows won't replace a running program.
+        $target = Join-Path $dist 'MusiKPL-new.exe'
+        Copy-Item $built $target -Force
+        Write-Warning 'dist\MusiKPL.exe is running, so this build is dist\MusiKPL-new.exe'
+    }
+    Get-Item $target | Select-Object Name, @{ n = 'MB'; e = { [math]::Round($_.Length / 1MB, 1) } }
     return
 }
 

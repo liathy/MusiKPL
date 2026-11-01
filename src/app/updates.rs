@@ -93,6 +93,8 @@ impl YtMusicApp {
             Updates::Installing { done, .. } => match done.try_recv() {
                 Ok(Ok(())) => {
                     self.updates = Updates::Idle;
+                    // Really close, even with close to tray on.
+                    self.quitting = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
                 Ok(Err(error)) => self.updates = Updates::Failed(error),

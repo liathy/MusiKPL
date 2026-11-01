@@ -4,6 +4,7 @@
 //! polls for events once per frame, like the yt-dlp workers.
 
 mod api;
+pub(crate) mod browse;
 mod scrobble;
 
 pub(crate) use api::Credentials;
@@ -15,6 +16,10 @@ pub(crate) use scrobble::{ScrobbleStep, ScrobbleTracker};
 /// accounts.
 const BUILT_IN_API_KEY: &str = env!("MUSIKPL_LASTFM_KEY");
 
+/// MusiKPL's shared secret, from lastfm-api-secret.txt (ignored by git).
+/// With it, users connect their account in one click, without keys.
+const BUILT_IN_API_SECRET: &str = env!("MUSIKPL_LASTFM_SECRET");
+
 /// The API key for read-only lookups: the user's own, else MusiKPL's.
 pub(crate) fn lookup_key(user_key: &str) -> Option<String> {
     [user_key.trim(), BUILT_IN_API_KEY]
@@ -22,6 +27,25 @@ pub(crate) fn lookup_key(user_key: &str) -> Option<String> {
         .find(|key| !key.is_empty())
         .map(str::to_owned)
 }
+
+/// The key and secret to connect and scrobble with: the user's own pair if
+/// they entered one, else MusiKPL's built-in pair.
+pub(crate) fn app_keys(user_key: &str, user_secret: &str) -> Option<(String, String)> {
+    let (key, secret) = (user_key.trim(), user_secret.trim());
+    if !key.is_empty() && !secret.is_empty() {
+        return Some((key.to_owned(), secret.to_owned()));
+    }
+    built_in_keys()
+}
+
+/// MusiKPL's own key pair, when this build carries both.
+pub(crate) fn built_in_keys() -> Option<(String, String)> {
+    (!BUILT_IN_API_KEY.is_empty() && !BUILT_IN_API_SECRET.is_empty())
+        .then(|| (BUILT_IN_API_KEY.to_owned(), BUILT_IN_API_SECRET.to_owned()))
+}
+
+/// Where new users sign up.
+pub(crate) const JOIN_URL: &str = "https://www.last.fm/join";
 
 use std::{
     sync::{
@@ -53,6 +77,12 @@ pub(crate) enum LastFmJob {
         started_at: u64,
         duration: Option<f64>,
     },
+    /// Love or unlove a song on the user's profile.
+    Love {
+        credentials: Credentials,
+        song: SongInfo,
+        love: bool,
+    },
     /// The song's genres, for the taste profile.
     Tags {
         api_key: String,
@@ -70,6 +100,27 @@ pub(crate) enum LastFmEvent {
     },
     /// A scrobble or now-playing update failed.
     Failed(String),
+    /// Artists found for a search.
+    Artists {
+        query: String,
+        result: Result<Vec<browse::ArtistHit>, String>,
+    },
+    /// An artist's page.
+    Artist {
+        name: String,
+        result: Result<browse::ArtistPage, String>,
+    },
+    /// The Last.fm user whose name is the search, if any.
+    People {
+        query: String,
+        result: Result<Option<browse::Profile>, String>,
+    },
+    /// A user's profile and stats.
+    Profile {
+        user: String,
+        period: browse::Period,
+        result: Result<browse::Profile, String>,
+    },
     /// The approval page is open in the browser.
     AwaitingApproval {
         url: String,
@@ -79,6 +130,27 @@ pub(crate) enum LastFmEvent {
         session_key: String,
     },
     ConnectFailed(String),
+}
+
+/// Something to look up for browsing.
+pub(crate) enum BrowseRequest {
+    Artists {
+        api_key: String,
+        query: String,
+    },
+    Artist {
+        api_key: String,
+        name: String,
+    },
+    People {
+        api_key: String,
+        query: String,
+    },
+    Profile {
+        api_key: String,
+        user: String,
+        period: browse::Period,
+    },
 }
 
 pub(crate) struct LastFm {
@@ -115,6 +187,38 @@ impl LastFm {
             sender
         });
         let _ = sender.send(job);
+    }
+
+    /// Look something up for browsing on its own thread, so it never waits
+    /// behind scrobbles or genre lookups.
+    pub(crate) fn browse(&self, request: BrowseRequest) {
+        let events = self.events_tx.clone();
+        thread::spawn(move || {
+            let event = match request {
+                BrowseRequest::Artists { api_key, query } => LastFmEvent::Artists {
+                    result: browse::search_artists(&api_key, &query),
+                    query,
+                },
+                BrowseRequest::People { api_key, query } => LastFmEvent::People {
+                    result: browse::find_user(&api_key, &query),
+                    query,
+                },
+                BrowseRequest::Artist { api_key, name } => LastFmEvent::Artist {
+                    result: browse::artist_page(&api_key, &name),
+                    name,
+                },
+                BrowseRequest::Profile {
+                    api_key,
+                    user,
+                    period,
+                } => LastFmEvent::Profile {
+                    result: browse::profile(&api_key, &user, period),
+                    user,
+                    period,
+                },
+            };
+            let _ = events.send(event);
+        });
     }
 
     pub(crate) fn poll(&self) -> Vec<LastFmEvent> {
@@ -190,6 +294,13 @@ fn run_jobs(jobs: &Receiver<LastFmJob>, events: &Sender<LastFmEvent>) {
                 started_at,
                 duration,
             } => api::scrobble(&credentials, &song, started_at, duration)
+                .err()
+                .map(LastFmEvent::Failed),
+            LastFmJob::Love {
+                credentials,
+                song,
+                love,
+            } => api::love(&credentials, &song, love)
                 .err()
                 .map(LastFmEvent::Failed),
             LastFmJob::Tags {

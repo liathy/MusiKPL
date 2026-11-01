@@ -82,7 +82,11 @@ impl YtMusicApp {
         let mut exclusions = self.mix_exclusions();
         // Lean toward the user's taste: skipped songs out, favorite
         // artists up, the Mix's own order otherwise.
-        let preferences = self.library.taste.preferences(unix_now());
+        let mut preferences = self.library.taste.preferences(unix_now());
+        // Bookmarked artists count as favorites.
+        for bookmark in &self.browse.bookmarks {
+            preferences.favor(&bookmark.name);
+        }
         let tools = self.tools.clone();
         let registry = self.registry.clone();
         let (sender, receiver) = mpsc::channel();

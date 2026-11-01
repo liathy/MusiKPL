@@ -156,6 +156,11 @@ fn window(error: Option<String>) -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("MusiKPL Setup")
+            .with_icon(egui::IconData {
+                rgba: include_bytes!(concat!(env!("OUT_DIR"), "/icon.rgba")).to_vec(),
+                width: 256,
+                height: 256,
+            })
             .with_inner_size(vec2(560.0, 400.0))
             .with_resizable(false)
             .with_maximize_button(false),

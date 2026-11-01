@@ -546,13 +546,50 @@ pub(crate) fn cover(
         Color32::from_white_alpha(80),
     );
     if let Some(cover) = cover {
-        let [left, top, right, bottom] = cover.uv;
-        egui::Image::new(cover.url.clone())
-            .uv(Rect::from_min_max(pos2(left, top), pos2(right, bottom)))
-            .rounding(rounding)
-            .texture_options(crate::ui::icons::SMOOTH)
-            .show_loading_spinner(false)
-            .paint_at(ui, rect);
+        cover_image(ui, rect, cover, rounding);
+    }
+}
+
+/// How long a picture that failed to load waits before it is tried again.
+const IMAGE_RETRY_SECS: f64 = 20.0;
+
+/// Paint a cover image once it has loaded, over whatever placeholder is
+/// already drawn. A picture that fails to load (a network hiccup, say)
+/// leaves the placeholder instead of an error sign, and is tried again a
+/// little later. Returns whether the image was painted.
+pub(crate) fn cover_image(ui: &Ui, rect: Rect, cover: &Cover, rounding: f32) -> bool {
+    use egui::load::{SizeHint, TexturePoll};
+    let ctx = ui.ctx();
+    match ctx.try_load_texture(&cover.url, crate::ui::icons::SMOOTH, SizeHint::default()) {
+        Ok(TexturePoll::Ready { texture }) => {
+            let [left, top, right, bottom] = cover.uv;
+            egui::Image::from_texture(texture)
+                .uv(Rect::from_min_max(pos2(left, top), pos2(right, bottom)))
+                .rounding(rounding)
+                .paint_at(ui, rect);
+            true
+        }
+        Ok(TexturePoll::Pending { .. }) => false,
+        Err(_) => {
+            let failures = Id::new("image_failures");
+            let now = ctx.input(|input| input.time);
+            let failed_at = ctx.data_mut(|data| {
+                *data
+                    .get_temp_mut_or_default::<std::collections::HashMap<String, f64>>(failures)
+                    .entry(cover.url.clone())
+                    .or_insert(now)
+            });
+            if now - failed_at > IMAGE_RETRY_SECS {
+                ctx.forget_image(&cover.url);
+                ctx.data_mut(|data| {
+                    data.get_temp_mut_or_default::<std::collections::HashMap<String, f64>>(
+                        failures,
+                    )
+                    .remove(&cover.url);
+                });
+            }
+            false
+        }
     }
 }
 

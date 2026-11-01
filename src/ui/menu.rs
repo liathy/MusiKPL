@@ -358,6 +358,7 @@ pub(crate) fn playlist_list(
             delete,
             item_id("delete_playlist", &playlist.id.to_string()),
             row.contains_pointer(),
+            "Hold for 3 seconds to delete this playlist",
             icons,
             r,
         );
@@ -394,6 +395,7 @@ fn hold_to_delete(
     rect: Rect,
     id: Id,
     row_hovered: bool,
+    tooltip: &str,
     icons: &IconTextures,
     r: &ResponsiveUi,
 ) -> bool {
@@ -465,6 +467,315 @@ fn hold_to_delete(
     );
     response
         .on_hover_cursor(CursorIcon::PointingHand)
-        .on_hover_text("Hold for 3 seconds to delete this playlist");
+        .on_hover_text(tooltip);
     fire
+}
+
+/// Whether a friend can be reached in MusiKPL.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FriendStatus {
+    Online,
+    Offline,
+    /// Not checked yet.
+    Unknown,
+    /// Added from Last.fm, but their friend code wasn't added yet.
+    NoCode,
+}
+
+pub(crate) struct FriendItem<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) status: FriendStatus,
+    /// They invited us (shown as a Join button when invites are quiet).
+    pub(crate) invited_us: bool,
+}
+
+pub(crate) struct FriendsView<'a> {
+    pub(crate) items: Vec<FriendItem<'a>>,
+    /// This device hosts a Jam, so friends can be invited.
+    pub(crate) hosting: bool,
+    /// Invites show in the list (not as a pop-up).
+    pub(crate) quiet_invites: bool,
+    pub(crate) adding: bool,
+    pub(crate) notice: Option<&'a str>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum FriendAction {
+    Open(usize),
+    Remove(usize),
+    Invite(usize),
+    Join(usize),
+    CopyCode,
+    StartAdding,
+    CancelAdding,
+    AddCode,
+}
+
+pub(crate) fn friends_list(
+    ui: &mut Ui,
+    view: &FriendsView<'_>,
+    code_input: &mut String,
+    icons: &IconTextures,
+    r: &ResponsiveUi,
+) -> Vec<FriendAction> {
+    use crate::ui::widgets::{pill_button, text_field, FieldOptions, PillKind, PillSize};
+    let theme = Theme::default();
+    let mut actions = Vec::new();
+    ui.spacing_mut().item_spacing.y = r.rem(0.375);
+    let note = |ui: &mut Ui, text: &str, color: Color32| {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(text)
+                    .font(fonts::body(r.rem(0.8125)))
+                    .color(color),
+            )
+            .wrap(),
+        );
+    };
+    if let Some(notice) = view.notice {
+        note(ui, notice, theme.warning);
+    }
+    if view.adding {
+        let width = ui.available_width();
+        text_field(
+            ui,
+            code_input,
+            width,
+            FieldOptions {
+                id: "friend_code",
+                hint: "Paste a friend code",
+                password: false,
+                enabled: true,
+            },
+            r,
+        );
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = r.rem(0.5);
+            if pill_button(ui, "Add", PillKind::Primary, PillSize::Small, r).clicked() {
+                actions.push(FriendAction::AddCode);
+            }
+            if pill_button(ui, "Cancel", PillKind::Secondary, PillSize::Small, r).clicked() {
+                actions.push(FriendAction::CancelAdding);
+            }
+        });
+    } else {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = r.rem(0.5);
+            if pill_button(ui, "Copy my code", PillKind::Secondary, PillSize::Small, r)
+                .on_hover_text("Send it to a friend; they add it, and you add theirs")
+                .clicked()
+            {
+                actions.push(FriendAction::CopyCode);
+            }
+            if pill_button(ui, "Add a code", PillKind::Secondary, PillSize::Small, r).clicked() {
+                actions.push(FriendAction::StartAdding);
+            }
+        });
+    }
+    if view.items.is_empty() {
+        note(
+            ui,
+            "Swap friend codes, or open someone's Last.fm profile from Search and press Add friend.",
+            theme.muted_text,
+        );
+    }
+    for (index, friend) in view.items.iter().enumerate() {
+        let (rect, row) =
+            ui.allocate_exact_size(vec2(ui.available_width(), r.rem(3.0)), Sense::click());
+        let hover = pointer_amount(ui, &row);
+        ui.painter().rect_filled(
+            rect,
+            r.rem(0.5),
+            mix(
+                Color32::TRANSPARENT,
+                Color32::from_rgba_unmultiplied(34, 34, 34, 153),
+                hover,
+            ),
+        );
+        let photo = Rect::from_min_size(
+            pos2(rect.left() + r.rem(0.375), rect.center().y - r.rem(1.125)),
+            r.rem2(2.25, 2.25),
+        );
+        crate::ui::artist::round_photo(ui, photo, friend.name, None, icons);
+        // Online dot on the photo.
+        if friend.status == FriendStatus::Online {
+            let dot = pos2(photo.right() - r.rem(0.25), photo.bottom() - r.rem(0.25));
+            ui.painter().circle_filled(dot, r.rem(0.3125), theme.panel);
+            ui.painter()
+                .circle_filled(dot, r.rem(0.21875), theme.success);
+        }
+        let remove = Rect::from_center_size(
+            pos2(rect.right() - r.rem(1.125), rect.center().y),
+            r.rem2(1.75, 1.75),
+        );
+        // A Join or Invite button left of the remove button.
+        let button_label = if friend.invited_us && view.quiet_invites {
+            Some("Join")
+        } else if view.hosting && friend.status == FriendStatus::Online {
+            Some("Invite")
+        } else {
+            None
+        };
+        let button_rect = button_label.map(|label| {
+            let width = r.rem(0.875) * label.len() as f32 * 0.55 + r.rem(1.5);
+            Rect::from_center_size(
+                pos2(remove.left() - r.rem(0.25) - width / 2.0, rect.center().y),
+                vec2(width, r.rem(1.75)),
+            )
+        });
+        let text_right = button_rect.map_or(remove.left(), |button| button.left()) - r.rem(0.25);
+        let text = Rect::from_min_max(
+            pos2(photo.right() + r.rem(0.625), rect.top()),
+            pos2(text_right, rect.bottom()),
+        );
+        elided(
+            ui.painter(),
+            Rect::from_min_size(
+                pos2(text.left(), rect.center().y - r.rem(1.125)),
+                vec2(text.width(), r.rem(1.375)),
+            ),
+            friend.name,
+            fonts::display(r.rem(1.0)),
+            theme.text,
+            Align2::LEFT_CENTER,
+        );
+        let (status, color) = match friend.status {
+            _ if friend.invited_us && view.quiet_invites => ("Invited you to a Jam", theme.warning),
+            FriendStatus::Online => ("Online in MusiKPL", theme.success),
+            FriendStatus::Offline => ("Offline", theme.muted_text),
+            FriendStatus::Unknown => ("Checking…", theme.muted_text),
+            FriendStatus::NoCode => ("Needs their friend code", theme.muted_text),
+        };
+        elided(
+            ui.painter(),
+            Rect::from_min_size(
+                pos2(text.left(), rect.center().y + r.rem(0.125)),
+                vec2(text.width(), r.rem(1.0)),
+            ),
+            status,
+            fonts::body(r.rem(0.75)),
+            color,
+            Align2::LEFT_CENTER,
+        );
+
+        let pointer = ui.input(|input| input.pointer.interact_pos());
+        let over = |rect: Rect| pointer.is_some_and(|pointer| rect.contains(pointer));
+        let mut on_button = false;
+        if let (Some(label), Some(button)) = (button_label, button_rect) {
+            let response = ui.interact(
+                button,
+                item_id("friend_button", &index.to_string()),
+                Sense::click(),
+            );
+            let t = hover_amount(ui, &response);
+            ui.painter().rect_filled(
+                button,
+                button.height() / 2.0,
+                mix(theme.text, theme.primary_hover, t),
+            );
+            ui.painter().text(
+                button.center(),
+                Align2::CENTER_CENTER,
+                label,
+                fonts::display(r.rem(0.875)),
+                Color32::BLACK,
+            );
+            let clicked = (response.clicked() || row.clicked()) && over(button);
+            response.on_hover_cursor(CursorIcon::PointingHand);
+            if clicked {
+                actions.push(if label == "Join" {
+                    FriendAction::Join(index)
+                } else {
+                    FriendAction::Invite(index)
+                });
+            }
+            on_button = over(button);
+        }
+        let removed = hold_to_delete(
+            ui,
+            remove,
+            item_id("remove_friend", &index.to_string()),
+            row.contains_pointer(),
+            "Hold for 3 seconds to remove this friend",
+            icons,
+            r,
+        );
+        if removed {
+            actions.push(FriendAction::Remove(index));
+        } else if !on_button
+            && !over(remove)
+            && row
+                .on_hover_cursor(CursorIcon::PointingHand)
+                .on_hover_text("Open profile")
+                .clicked()
+        {
+            actions.push(FriendAction::Open(index));
+        }
+    }
+    actions
+}
+/// "Ana invited you to a Jam" with Join and Not now, floating above the
+/// player bar. Returns Some(true) for Join, Some(false) for Not now.
+pub(crate) fn invite_popup(
+    ctx: &egui::Context,
+    area: Rect,
+    name: &str,
+    icons: &IconTextures,
+    r: &ResponsiveUi,
+) -> Option<bool> {
+    use crate::ui::widgets::{pill_button, PillKind, PillSize};
+    let theme = Theme::default();
+    let width = r.rem(22.0).min(area.width() - r.rem(3.0));
+    egui::Area::new(Id::new("jam_invite_popup"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(pos2(area.right() - r.rem(1.5), area.bottom() - r.rem(1.5)))
+        .pivot(Align2::RIGHT_BOTTOM)
+        .show(ctx, |ui| {
+            let mut answer = None;
+            egui::Frame::none()
+                .fill(theme.panel)
+                .stroke(Stroke::new(1.0_f32, theme.text))
+                .rounding(r.rem(0.75))
+                .inner_margin(egui::Margin::same(r.rem(1.0)))
+                .show(ui, |ui| {
+                    ui.set_width(width);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = r.rem(0.75);
+                        let (photo, _) = ui.allocate_exact_size(r.rem2(2.75, 2.75), Sense::hover());
+                        crate::ui::artist::round_photo(ui, photo, name, None, icons);
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = r.rem(0.5);
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(format!("{name} invited you to a Jam"))
+                                        .font(fonts::display(r.rem(1.0625)))
+                                        .color(theme.text),
+                                )
+                                .wrap(),
+                            );
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = r.rem(0.5);
+                                if pill_button(ui, "Join", PillKind::Primary, PillSize::Small, r)
+                                    .clicked()
+                                {
+                                    answer = Some(true);
+                                }
+                                if pill_button(
+                                    ui,
+                                    "Not now",
+                                    PillKind::Secondary,
+                                    PillSize::Small,
+                                    r,
+                                )
+                                .clicked()
+                                {
+                                    answer = Some(false);
+                                }
+                            });
+                        });
+                    });
+                });
+            answer
+        })
+        .inner
 }

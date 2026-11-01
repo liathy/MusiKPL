@@ -30,7 +30,8 @@ impl Tools {
     /// 1. Beside MusiKPL, so a user can supply their own versions.
     /// 2. The copies bundled inside Windows release builds, unpacked once.
     /// 3. In development builds, the project root.
-    /// 4. Installed on the system (in `PATH`), as on Linux.
+    /// 4. On Linux, MusiKPL's own downloaded yt-dlp (kept up to date).
+    /// 5. Installed on the system (in `PATH`), as mpv is on Linux.
     pub(crate) fn discover() -> Self {
         let beside_exe = std::env::current_exe()
             .ok()
@@ -38,6 +39,10 @@ impl Tools {
             .unwrap_or_else(|| PathBuf::from("."));
         let mut folders = vec![beside_exe.clone()];
         folders.extend(bundled::unpack());
+        // Linux: MusiKPL's own up-to-date yt-dlp, before any system copy.
+        folders.extend(
+            bundled::managed_yt_dlp().and_then(|path| path.parent().map(Path::to_path_buf)),
+        );
         #[cfg(debug_assertions)]
         folders.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
         if let Some(path) = std::env::var_os("PATH") {
@@ -70,9 +75,14 @@ impl Tools {
         Err(if cfg!(windows) {
             format!("MusiKPL couldn't find {missing}. Place it next to MusiKPL.exe.")
         } else {
-            format!(
-                "MusiKPL couldn't find {missing}. Install it (on Ubuntu: sudo apt install mpv, and yt-dlp from https://github.com/yt-dlp/yt-dlp), or place it next to MusiKPL."
-            )
+            let mut help = Vec::new();
+            if !self.mpv.exists() {
+                help.push("install mpv (on Ubuntu: sudo apt install mpv)");
+            }
+            if !self.yt_dlp.exists() {
+                help.push("MusiKPL downloads yt-dlp by itself on first start, which needs an internet connection; try again in a moment");
+            }
+            format!("MusiKPL couldn't find {missing}: {}.", help.join("; "))
         })
     }
 }
@@ -159,26 +169,36 @@ pub(crate) fn resolve_audio_url(
     registry: &ProcessRegistry,
 ) -> Result<String, String> {
     tools.ready()?;
-    let mut command = Command::new(&tools.yt_dlp);
-    hide_console(&mut command);
-    command.args([
-        "--get-url",
-        "--format",
-        "bestaudio/best",
-        "--no-playlist",
-        "--no-warnings",
-        &track.url(),
-        "--extractor-args",
-        "youtube:player_client=android",
-    ]);
-    let output = run_registered(command, registry)?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    // The Android client is quickest when it works; if YouTube gives it no
+    // usable stream, yt-dlp's own default clients are tried.
+    let mut last_error = String::new();
+    for client in [Some("youtube:player_client=android"), None] {
+        let mut command = Command::new(&tools.yt_dlp);
+        hide_console(&mut command);
+        command.args([
+            "--get-url",
+            "--format",
+            "bestaudio/best",
+            "--no-playlist",
+            "--no-warnings",
+            &track.url(),
+        ]);
+        if let Some(client) = client {
+            command.args(["--extractor-args", client]);
+        }
+        let output = run_registered(command, registry)?;
+        if output.status.success() {
+            if let Some(url) = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(str::trim)
+                .find(|line| line.starts_with("http"))
+            {
+                return Ok(url.to_owned());
+            }
+            last_error = "yt-dlp did not return an audio stream".into();
+        } else {
+            last_error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        }
     }
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::trim)
-        .find(|line| line.starts_with("http"))
-        .map(str::to_owned)
-        .ok_or_else(|| "yt-dlp did not return an audio stream".into())
+    Err(last_error)
 }

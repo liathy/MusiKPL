@@ -22,6 +22,10 @@ pub(crate) struct Settings {
     pub(crate) favorite_genres: Vec<String>,
     /// The first-run genre picker was completed or skipped.
     pub(crate) onboarded: bool,
+    /// Closing hides MusiKPL to the tray (Windows) instead of quitting.
+    pub(crate) close_to_tray: bool,
+    /// Friends' Jam invites pop up (else they wait in the Friends card).
+    pub(crate) invite_popups: bool,
 }
 
 impl Default for Settings {
@@ -34,6 +38,8 @@ impl Default for Settings {
             recent_searches: Vec::new(),
             favorite_genres: Vec::new(),
             onboarded: false,
+            close_to_tray: false,
+            invite_popups: true,
         }
     }
 }
@@ -47,12 +53,6 @@ pub(crate) struct LastFmSettings {
     pub(crate) api_secret: String,
     pub(crate) username: String,
     pub(crate) session_key: String,
-}
-
-impl LastFmSettings {
-    pub(crate) fn connected(&self) -> bool {
-        !self.api_key.is_empty() && !self.api_secret.is_empty() && !self.session_key.is_empty()
-    }
 }
 
 impl Settings {
@@ -92,23 +92,10 @@ mod tests {
             serde_json::from_str(r#"{"lastfm":{"api_key":"k"}}"#).expect("parses");
         assert_eq!(settings.lastfm.api_key, "k");
         assert!(!settings.start_with_windows);
-        assert!(!settings.lastfm.connected());
         // Settings saved by older versions keep today's behavior.
         assert_eq!(settings.volume, 100);
         assert!(settings.auto_mix);
         assert!(!settings.onboarded);
-    }
-
-    #[test]
-    fn a_session_needs_key_secret_and_session() {
-        let mut lastfm = LastFmSettings {
-            api_key: "k".into(),
-            api_secret: "s".into(),
-            ..LastFmSettings::default()
-        };
-        assert!(!lastfm.connected());
-        lastfm.session_key = "sk".into();
-        assert!(lastfm.connected());
     }
 
     #[test]

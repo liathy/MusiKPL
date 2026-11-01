@@ -7,16 +7,17 @@ use eframe::egui::{
 };
 
 use crate::{
-    domain::{CoverArt, Playlists, Track},
+    domain::{Cover, CoverArt, Playlists, Track},
     theme::Theme,
     ui::{
+        artist::{artist_card, compact},
         fonts,
         icons::{paint_icon, IconTextures},
         jam::{self, JamAction, JamPanelState, JamView},
         layout::{modal_rect, Side},
         menu::{
-            add_to_playlist_menu, playlist_list, section_card, PlaylistItem, PlaylistItemAction,
-            PlaylistTarget,
+            add_to_playlist_menu, friends_list, playlist_list, section_card, FriendAction,
+            FriendStatus, FriendsView, PlaylistItem, PlaylistItemAction, PlaylistTarget,
         },
         responsive::ResponsiveUi,
         widgets::{
@@ -186,6 +187,20 @@ pub(crate) enum MenuAction {
     Playlist(PlaylistItemAction),
     TogglePlaylists,
     ToggleJam,
+    ToggleArtists,
+    ToggleFriends,
+    Friend(FriendAction),
+    OpenProfile,
+    ConnectLastFm,
+    OpenArtist(String),
+}
+
+/// The Last.fm account card at the top of the menu.
+pub(crate) struct MenuProfile<'a> {
+    /// Empty when not connected.
+    pub(crate) username: &'a str,
+    pub(crate) scrobbles: Option<u64>,
+    pub(crate) avatar: Option<Cover>,
 }
 
 /// Where updating MusiKPL stands, for the bottom of the menu.
@@ -204,6 +219,12 @@ pub(crate) struct MenuView<'a> {
     pub(crate) jam_open: bool,
     pub(crate) playlists: Vec<PlaylistItem<'a>>,
     pub(crate) playlists_open: bool,
+    pub(crate) profile: MenuProfile<'a>,
+    /// Bookmarked artists, with their photos.
+    pub(crate) artists: Vec<(&'a str, Option<Cover>)>,
+    pub(crate) artists_open: bool,
+    pub(crate) friends: FriendsView<'a>,
+    pub(crate) friends_open: bool,
     pub(crate) update: UpdateView<'a>,
 }
 
@@ -219,6 +240,7 @@ fn jam_summary(view: &JamView<'_>) -> String {
 }
 
 /// The menu, docked on the left of `main`. `open` slides it in.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn show_menu(
     ui: &mut Ui,
     main: Rect,
@@ -226,6 +248,7 @@ pub(crate) fn show_menu(
     icons: &IconTextures,
     view: &MenuView<'_>,
     jam_invite: &mut String,
+    friend_code: &mut String,
     r: &ResponsiveUi,
 ) -> Vec<MenuAction> {
     let mut actions = Vec::new();
@@ -257,6 +280,43 @@ pub(crate) fn show_menu(
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = r.rem(0.75);
+                    // Last.fm account: the profile, or a way to connect.
+                    let width = ui.available_width();
+                    let card = if view.profile.username.is_empty() {
+                        artist_card(
+                            ui,
+                            width,
+                            "Last.fm",
+                            "Connect to see your stats",
+                            None,
+                            icons,
+                            r,
+                        )
+                        .on_hover_text("Connect your Last.fm account")
+                    } else {
+                        let subtitle = view.profile.scrobbles.map_or_else(
+                            || "Your profile".to_owned(),
+                            |scrobbles| format!("{} scrobbles", compact(scrobbles)),
+                        );
+                        artist_card(
+                            ui,
+                            width,
+                            view.profile.username,
+                            &subtitle,
+                            view.profile.avatar.as_ref(),
+                            icons,
+                            r,
+                        )
+                        .on_hover_text("Your Last.fm profile")
+                    };
+                    if card.clicked() {
+                        actions.push(if view.profile.username.is_empty() {
+                            MenuAction::ConnectLastFm
+                        } else {
+                            MenuAction::OpenProfile
+                        });
+                    }
+
                     let count = view.playlists.len();
                     let mut playlist_actions = Vec::new();
                     let card = section_card(
@@ -277,6 +337,82 @@ pub(crate) fn show_menu(
                         actions.push(MenuAction::TogglePlaylists);
                     }
                     actions.extend(playlist_actions.into_iter().map(MenuAction::Playlist));
+
+                    let mut opened_artist = None;
+                    let card = section_card(
+                        ui,
+                        "artists",
+                        &icons.artist,
+                        "Artists",
+                        &view.artists.len().to_string(),
+                        view.artists_open,
+                        &[],
+                        icons,
+                        r,
+                        |ui| {
+                            ui.spacing_mut().item_spacing.y = r.rem(0.25);
+                            if view.artists.is_empty() {
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(
+                                            "Bookmark artists from their page to keep them here.",
+                                        )
+                                        .font(fonts::body(r.rem(0.8125)))
+                                        .color(Theme::default().muted_text),
+                                    )
+                                    .wrap(),
+                                );
+                            }
+                            let width = ui.available_width();
+                            for (name, photo) in &view.artists {
+                                if artist_card(ui, width, name, "Artist", photo.as_ref(), icons, r)
+                                    .clicked()
+                                {
+                                    opened_artist = Some((*name).to_owned());
+                                }
+                            }
+                        },
+                    );
+                    if card.toggled {
+                        actions.push(MenuAction::ToggleArtists);
+                    }
+                    if let Some(name) = opened_artist {
+                        actions.push(MenuAction::OpenArtist(name));
+                    }
+
+                    let online = view
+                        .friends
+                        .items
+                        .iter()
+                        .filter(|friend| friend.status == FriendStatus::Online)
+                        .count();
+                    let invites = view.friends.items.iter().filter(|f| f.invited_us).count();
+                    let summary = match (invites, online) {
+                        (0, 0) => view.friends.items.len().to_string(),
+                        (0, online) => format!("{online} online"),
+                        (invites, _) => {
+                            format!("{invites} invite{}", if invites == 1 { "" } else { "s" })
+                        }
+                    };
+                    let mut friend_actions = Vec::new();
+                    let card = section_card(
+                        ui,
+                        "friends",
+                        &icons.friends,
+                        "Friends",
+                        &summary,
+                        view.friends_open,
+                        &[],
+                        icons,
+                        r,
+                        |ui| {
+                            friend_actions = friends_list(ui, &view.friends, friend_code, icons, r)
+                        },
+                    );
+                    if card.toggled {
+                        actions.push(MenuAction::ToggleFriends);
+                    }
+                    actions.extend(friend_actions.into_iter().map(MenuAction::Friend));
 
                     let mut jam_actions = Vec::new();
                     let card = section_card(
@@ -761,6 +897,8 @@ pub(crate) enum SettingsAction {
     Page(SettingsPage),
     SetStartWithWindows(bool),
     SetAutoMix(bool),
+    SetCloseToTray(bool),
+    SetInvitePopups(bool),
     LastFmConnect,
     LastFmCancel,
     LastFmDisconnect,
@@ -787,7 +925,11 @@ pub(crate) struct SettingsView<'a> {
     pub(crate) page: SettingsPage,
     pub(crate) start_with_windows: bool,
     pub(crate) auto_mix: bool,
+    pub(crate) close_to_tray: bool,
+    pub(crate) invite_popups: bool,
     pub(crate) lastfm: LastFmState<'a>,
+    /// MusiKPL carries its own key pair: connecting needs no keys.
+    pub(crate) one_click: bool,
     /// The latest problem to show on the current page.
     pub(crate) error: Option<&'a str>,
 }
@@ -1021,6 +1163,27 @@ fn general_page(
     ) {
         actions.push(SettingsAction::SetAutoMix(!view.auto_mix));
     }
+    if switch_card(
+        ui,
+        "Jam invites as pop-ups",
+        "When a friend invites you to a Jam, show a card you can't miss. Off: the invite waits quietly in Friends, in the menu.",
+        view.invite_popups,
+        r,
+    ) {
+        actions.push(SettingsAction::SetInvitePopups(!view.invite_popups));
+    }
+    // The tray is a Windows feature here.
+    if cfg!(windows)
+        && switch_card(
+            ui,
+            "Close to tray",
+            "Closing hides MusiKPL to the system tray and the music keeps playing. Click the tray icon to bring it back; right-click it to quit.",
+            view.close_to_tray,
+            r,
+        )
+    {
+        actions.push(SettingsAction::SetCloseToTray(!view.close_to_tray));
+    }
     history_card(ui, r, actions);
     error_line(ui, view.error, r);
 }
@@ -1151,13 +1314,72 @@ fn lastfm_page(
     page_heading(
         ui,
         "Last.fm",
-        Some("Connect your Last.fm account to scrobble the songs you listen to."),
+        Some("Connect your Last.fm account to scrobble what you listen to, love songs with ♥, and see your profile and stats in MusiKPL."),
         r,
     );
     let editable = matches!(view.lastfm, LastFmState::Disconnected);
     let width = r.rem(30.0).min(ui.available_width());
+    // With MusiKPL's own key built in, connecting takes one click; typing
+    // a key of your own is optional.
+    let own_keys_id = Id::new("lastfm_own_keys");
+    let mut own_keys = ui.data(|data| data.get_temp::<bool>(own_keys_id).unwrap_or(false))
+        || !api_key.trim().is_empty();
+    if view.one_click && editable {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = r.rem(0.75);
+            if pill_button(
+                ui,
+                "Connect with Last.fm",
+                PillKind::Primary,
+                PillSize::Medium,
+                r,
+            )
+            .on_hover_text("Opens Last.fm in your browser to approve MusiKPL")
+            .clicked()
+            {
+                actions.push(SettingsAction::LastFmConnect);
+            }
+            if pill_button(
+                ui,
+                "Create a Last.fm account",
+                PillKind::Secondary,
+                PillSize::Medium,
+                r,
+            )
+            .on_hover_text("Opens Last.fm's sign-up page; come back and press Connect")
+            .clicked()
+            {
+                actions.push(SettingsAction::OpenUrl(crate::lastfm::JOIN_URL.into()));
+            }
+        });
+        let toggle_label = if own_keys {
+            "Hide my own API key"
+        } else {
+            "Use my own API key instead"
+        };
+        if ui
+            .add(
+                egui::Label::new(
+                    egui::RichText::new(toggle_label)
+                        .font(fonts::body(r.rem(0.8125)))
+                        .color(theme.secondary_text)
+                        .underline(),
+                )
+                .sense(Sense::click()),
+            )
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .clicked()
+        {
+            own_keys = !own_keys;
+            ui.data_mut(|data| data.insert_temp(own_keys_id, own_keys));
+        }
+    }
+    let show_fields = !view.one_click || own_keys;
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = r.rem(0.5);
+        if !show_fields {
+            return;
+        }
         caps_label(ui, "API KEY", r);
         text_field(
             ui,
@@ -1230,6 +1452,10 @@ fn lastfm_page(
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = r.rem(0.75);
         match view.lastfm {
+            // One-click mode has its Connect button above.
+            LastFmState::Disconnected if view.one_click && !show_fields => {
+                status(ui, theme.muted_text, "Not connected", r);
+            }
             LastFmState::Disconnected => {
                 let ready = !api_key.trim().is_empty() && !api_secret.trim().is_empty();
                 let connect = pill_button(ui, "Connect", PillKind::Primary, PillSize::Medium, r);

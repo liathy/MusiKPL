@@ -46,6 +46,10 @@ icon_files! {
     volume_off => "volume_off.svg",
     volume_low => "volume_low.svg",
     volume_high => "volume_high.svg",
+    maximize => "maximize.svg",
+    restore => "restore.svg",
+    friends => "friends.svg",
+    artist => "artist.svg",
 }
 
 fn load(ctx: &egui::Context, name: &str, bytes: &[u8]) -> Result<TextureHandle, String> {

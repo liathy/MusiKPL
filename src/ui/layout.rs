@@ -69,6 +69,74 @@ pub(crate) fn modal_rect(window: Rect, r: &ResponsiveUi) -> Rect {
     window.shrink(r.rem(2.5))
 }
 
+/// The window's edges and corners, where dragging resizes it (the app
+/// draws its own frame, so Windows provides no resize border). Returns the
+/// side being dragged, if a drag started.
+pub(crate) fn resize_edges(
+    ui: &mut eframe::egui::Ui,
+    window: Rect,
+) -> Option<eframe::egui::ResizeDirection> {
+    use eframe::egui::{CursorIcon, Id, ResizeDirection, Sense};
+    // Thin enough not to get in the way of the window's own controls.
+    let edge = 5.0;
+    let corner = 12.0;
+    let (l, t, r, b) = (window.left(), window.top(), window.right(), window.bottom());
+    let handles = [
+        (
+            Rect::from_min_max(pos2(l, t), pos2(l + corner, t + corner)),
+            ResizeDirection::NorthWest,
+            CursorIcon::ResizeNorthWest,
+        ),
+        (
+            Rect::from_min_max(pos2(r - corner, t), pos2(r, t + corner)),
+            ResizeDirection::NorthEast,
+            CursorIcon::ResizeNorthEast,
+        ),
+        (
+            Rect::from_min_max(pos2(l, b - corner), pos2(l + corner, b)),
+            ResizeDirection::SouthWest,
+            CursorIcon::ResizeSouthWest,
+        ),
+        (
+            Rect::from_min_max(pos2(r - corner, b - corner), pos2(r, b)),
+            ResizeDirection::SouthEast,
+            CursorIcon::ResizeSouthEast,
+        ),
+        (
+            Rect::from_min_max(pos2(l + corner, t), pos2(r - corner, t + edge)),
+            ResizeDirection::North,
+            CursorIcon::ResizeNorth,
+        ),
+        (
+            Rect::from_min_max(pos2(l + corner, b - edge), pos2(r - corner, b)),
+            ResizeDirection::South,
+            CursorIcon::ResizeSouth,
+        ),
+        (
+            Rect::from_min_max(pos2(l, t + corner), pos2(l + edge, b - corner)),
+            ResizeDirection::West,
+            CursorIcon::ResizeWest,
+        ),
+        (
+            Rect::from_min_max(pos2(r - edge, t + corner), pos2(r, b - corner)),
+            ResizeDirection::East,
+            CursorIcon::ResizeEast,
+        ),
+    ];
+    let mut started = None;
+    for (index, (rect, direction, cursor)) in handles.into_iter().enumerate() {
+        let handle = ui
+            .interact(rect, Id::new(("window_resize", index)), Sense::drag())
+            .on_hover_cursor(cursor);
+        if handle.drag_started() {
+            started = Some(direction);
+        }
+    }
+    started
+}
+
+/// Smallest window that keeps the layout intact.
+pub(crate) const MIN_WINDOW: Vec2 = Vec2::new(960.0, 680.0);
 #[cfg(test)]
 mod tests {
     use super::*;

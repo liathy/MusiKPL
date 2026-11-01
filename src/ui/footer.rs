@@ -364,7 +364,8 @@ fn volume_and_queue(
     let group_width = r.rem(11.125);
     let queue_size = r.rem(3.75);
     let gap = r.rem(1.5625);
-    let left = column.center().x - (group_width + gap + queue_size) / 2.0;
+    // Against the right edge, mirroring the song info on the left.
+    let left = column.right() - r.rem(1.5) - queue_size - gap - group_width;
     let center_y = column.center().y;
 
     // Speaker icon (its waves follow the level; click to mute) and slider,

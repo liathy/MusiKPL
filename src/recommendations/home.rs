@@ -136,8 +136,58 @@ fn genre_row(genre: &str, rng: &mut Rng) -> RowPlan {
 /// Plan Home from listening history, falling back to the genres picked on
 /// first run. Each call draws from the user's favorites at random, leaning
 /// toward the most played, so Home changes every time it is rebuilt.
-pub(crate) fn plan_home(taste: &Taste, seeds: &[String], now: u64, rng: &mut Rng) -> Vec<RowPlan> {
+/// An artist the user bookmarked, with Last.fm's similar artists.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Followed {
+    pub(crate) name: String,
+    pub(crate) similar: Vec<String>,
+}
+
+/// "From {artist}": songs by a bookmarked artist.
+fn followed_row(taste: &Taste, followed: &Followed, now: u64, rng: &mut Rng) -> RowPlan {
+    RowPlan {
+        title: format!("From {}", followed.name),
+        ..artist_row(taste, &followed.name, now, rng)
+    }
+}
+
+/// "Similar to {artist}": songs by artists Last.fm finds similar to a
+/// bookmarked one, two at a time, the rest kept for paging.
+fn similar_row(followed: &Followed, rng: &mut Rng) -> Option<RowPlan> {
+    let mut similar = followed.similar.clone();
+    if similar.is_empty() {
+        return None;
+    }
+    rng.shuffle(&mut similar);
+    let searches: Vec<String> = similar
+        .iter()
+        .map(|artist| format!("ytsearch15:{artist} songs"))
+        .collect();
+    let split = searches.len().min(2);
+    Some(RowPlan {
+        title: format!("Similar to {}", followed.name),
+        sources: searches[..split].to_vec(),
+        more: searches[split..].to_vec(),
+        discover: false,
+    })
+}
+
+pub(crate) fn plan_home(
+    taste: &Taste,
+    seeds: &[String],
+    followed: &[Followed],
+    now: u64,
+    rng: &mut Rng,
+) -> Vec<RowPlan> {
     let mut rows = Vec::new();
+    // Bookmarked artists come first: one of them, and artists like another.
+    if let Some(artist) = rng.pick(followed) {
+        rows.push(followed_row(taste, artist, now, rng));
+    }
+    let with_similar: Vec<&Followed> = followed.iter().filter(|f| !f.similar.is_empty()).collect();
+    if let Some(artist) = rng.pick(&with_similar) {
+        rows.extend(similar_row(artist, rng));
+    }
     let artists = rng.weighted_sample(&taste.top_artists(now, ARTIST_POOL), 2);
     for (artist, _) in &artists {
         rows.push(artist_row(taste, artist, now, rng));
@@ -190,11 +240,16 @@ pub(crate) fn plan_home(taste: &Taste, seeds: &[String], now: u64, rng: &mut Rng
 pub(crate) fn plan_more_rows(
     taste: &Taste,
     seeds: &[String],
+    followed: &[Followed],
     now: u64,
     shown: &HashSet<String>,
     rng: &mut Rng,
 ) -> Vec<RowPlan> {
     let mut candidates: Vec<RowPlan> = Vec::new();
+    for artist in followed {
+        candidates.push(followed_row(taste, artist, now, rng));
+        candidates.extend(similar_row(artist, rng));
+    }
     for (artist, _) in rng.weighted_sample(&taste.top_artists(now, MORE_POOL), MORE_POOL) {
         candidates.push(artist_row(taste, &artist, now, rng));
     }
@@ -340,6 +395,7 @@ mod tests {
         let plans = plan_home(
             &Taste::default(),
             &["hardstyle".into(), "russian rap".into()],
+            &[],
             NOW,
             &mut Rng::new(1),
         );
@@ -348,7 +404,7 @@ mod tests {
         assert!(titles.contains(&"Because you like Russian rap"));
         assert_eq!(titles.last(), Some(&"Discover"));
         assert!(plans.last().unwrap().discover);
-        let fresh = plan_home(&Taste::default(), &[], NOW, &mut Rng::new(1));
+        let fresh = plan_home(&Taste::default(), &[], &[], NOW, &mut Rng::new(1));
         assert_eq!(fresh.len(), 1);
         assert_eq!(fresh[0].title, "Popular right now");
     }
@@ -357,7 +413,7 @@ mod tests {
     fn favorite_artists_get_rows_seeded_by_their_best_song() {
         let mut taste = Taste::default();
         taste.record(&track("q1", "Queen"), 900.0, ListenEnd::Finished, NOW);
-        let plans = plan_home(&taste, &[], NOW, &mut Rng::new(1));
+        let plans = plan_home(&taste, &[], &[], NOW, &mut Rng::new(1));
         assert_eq!(plans[0].title, "Because you like Queen");
         assert!(plans[0].sources[0].contains("list=RDq1"));
     }

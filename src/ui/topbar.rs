@@ -24,6 +24,8 @@ pub(crate) enum TopBarAction {
     SearchFor(String),
     StartDrag,
     Minimize,
+    /// Maximize, or restore when maximized.
+    ToggleMaximize,
     Close,
 }
 
@@ -41,7 +43,9 @@ pub(crate) fn show(
     // Empty parts of the bar move the window. Controls added below sit on
     // top of this and take their own clicks.
     let drag = ui.interact(bar, Id::new("top_bar_drag"), Sense::click_and_drag());
-    if drag.drag_started() {
+    if drag.double_clicked() {
+        actions.push(TopBarAction::ToggleMaximize);
+    } else if drag.drag_started() {
         actions.push(TopBarAction::StartDrag);
     }
 
@@ -103,7 +107,33 @@ pub(crate) fn show(
     let control = r.rem2(2.25, 2.25);
     let close_rect =
         Rect::from_center_size(pos2(bar.right() - r.rem(0.9375 + 1.125), center_y), control);
-    let minimize_rect = close_rect.translate(vec2(-(control.x + r.rem(0.5)), 0.0));
+    let maximize_rect = close_rect.translate(vec2(-(control.x + r.rem(0.5)), 0.0));
+    let minimize_rect = maximize_rect.translate(vec2(-(control.x + r.rem(0.5)), 0.0));
+    let maximize = button(ui, "window_maximize", maximize_rect);
+    paint_icon_button(
+        ui,
+        maximize_rect,
+        &maximize,
+        if state.maximized {
+            &icons.restore
+        } else {
+            &icons.maximize
+        },
+        r.rem2(1.0, 1.0),
+        control.x / 2.0,
+        ButtonColors::round(&theme),
+    );
+    if maximize
+        .on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text(if state.maximized {
+            "Restore"
+        } else {
+            "Maximize"
+        })
+        .clicked()
+    {
+        actions.push(TopBarAction::ToggleMaximize);
+    }
     let close = button(ui, "window_close", close_rect);
     paint_icon_button(
         ui,
@@ -163,9 +193,14 @@ pub(crate) fn show(
 pub(crate) struct TopBarState<'a> {
     pub(crate) menu_open: bool,
     pub(crate) home_open: bool,
+    /// The window is maximized (the button then restores it).
+    pub(crate) maximized: bool,
     /// Recent searches, newest first.
     pub(crate) recent: &'a [String],
 }
+
+/// Recent searches shown under the search field at most.
+const MAX_SHOWN: usize = 5;
 
 /// Recent searches under the search field while it is being typed in,
 /// narrowed to those matching what is typed. Returns the one clicked.
@@ -184,13 +219,18 @@ fn recent_searches(
     // Clicking a suggestion takes focus from the field before the click
     // lands, so the list also stays while the pointer is over it.
     let last_rect: Option<Rect> = ui.data(|data| data.get_temp(popup));
-    let pointer_inside = last_rect.is_some_and(|rect| ui.rect_contains_pointer(rect));
+    // Asked of the pointer itself: the list floats above this layer, so the
+    // layer's own hover test would always say no.
+    let pointer = ui.input(|input| input.pointer.hover_pos());
+    let pointer_inside = last_rect
+        .zip(pointer)
+        .is_some_and(|(rect, pointer)| rect.contains(pointer));
     let typed = search.trim().to_lowercase();
     let matches: Vec<&String> = recent
         .iter()
         .filter(|query| typed.is_empty() || query.to_lowercase().contains(&typed))
         .filter(|query| !query.eq_ignore_ascii_case(search.trim()))
-        .take(8)
+        .take(MAX_SHOWN)
         .collect();
     if !(focused || pointer_inside) || matches.is_empty() {
         ui.data_mut(|data| data.remove::<Rect>(popup));

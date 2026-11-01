@@ -8,7 +8,7 @@ use eframe::egui;
 use crate::{
     domain::song_info,
     infrastructure::{settings::Settings, system},
-    lastfm::{Credentials, LastFmEvent, LastFmJob, ScrobbleStep},
+    lastfm::{app_keys, built_in_keys, Credentials, LastFmEvent, LastFmJob, ScrobbleStep},
     ui::{
         icons::IconTextures,
         overlays::{self, LastFmState, SettingsAction, SettingsView},
@@ -41,17 +41,30 @@ impl YtMusicApp {
         }
     }
 
-    fn credentials(&self) -> Option<Credentials> {
+    /// What scrobbling and loving need: a session, plus the user's own key
+    /// pair or MusiKPL's built-in one.
+    pub(super) fn credentials(&self) -> Option<Credentials> {
         let lastfm = &self.settings.lastfm;
-        lastfm.connected().then(|| Credentials {
-            api_key: lastfm.api_key.clone(),
-            api_secret: lastfm.api_secret.clone(),
+        if lastfm.session_key.is_empty() {
+            return None;
+        }
+        let (api_key, api_secret) = app_keys(&lastfm.api_key, &lastfm.api_secret)?;
+        Some(Credentials {
+            api_key,
+            api_secret,
             session_key: lastfm.session_key.clone(),
         })
     }
 
+    pub(super) fn lastfm_connected(&self) -> bool {
+        self.credentials().is_some() && !self.settings.lastfm.username.is_empty()
+    }
+
     pub(super) fn poll_lastfm(&mut self) {
         for event in self.lastfm.poll() {
+            let Some(event) = self.receive_browse(event) else {
+                continue;
+            };
             match event {
                 LastFmEvent::Tags { video_id, tags } => self.receive_tags(&video_id, tags),
                 LastFmEvent::Failed(message) => {
@@ -74,11 +87,17 @@ impl YtMusicApp {
                     self.settings.lastfm.session_key = session_key;
                     self.settings_error = None;
                     self.save_settings();
+                    self.prefetch_profile();
                 }
                 LastFmEvent::ConnectFailed(message) => {
                     self.lastfm_connect = LastFmConnect::Idle;
                     self.settings_error = Some(message);
                 }
+                // Handled by receive_browse.
+                LastFmEvent::Artists { .. }
+                | LastFmEvent::Artist { .. }
+                | LastFmEvent::People { .. }
+                | LastFmEvent::Profile { .. } => {}
             }
         }
     }
@@ -131,7 +150,7 @@ impl YtMusicApp {
         icons: &IconTextures,
         r: &ResponsiveUi,
     ) {
-        let lastfm = if self.settings.lastfm.connected() {
+        let lastfm = if self.lastfm_connected() {
             LastFmState::Connected {
                 username: &self.settings.lastfm.username,
             }
@@ -146,7 +165,10 @@ impl YtMusicApp {
             page: self.settings_page,
             start_with_windows: self.settings.start_with_windows,
             auto_mix: self.auto_mix,
+            close_to_tray: self.settings.close_to_tray,
+            invite_popups: self.settings.invite_popups,
             lastfm,
+            one_click: built_in_keys().is_some(),
             error: self.settings_error.as_deref(),
         };
         let actions = overlays::show_settings(
@@ -168,6 +190,14 @@ impl YtMusicApp {
         match action {
             SettingsAction::Close => self.settings_open = false,
             SettingsAction::SetAutoMix(enabled) => self.set_auto_mix(enabled),
+            SettingsAction::SetInvitePopups(enabled) => {
+                self.settings.invite_popups = enabled;
+                self.save_settings();
+            }
+            SettingsAction::SetCloseToTray(enabled) => {
+                self.settings.close_to_tray = enabled;
+                self.save_settings();
+            }
             SettingsAction::ClearHistory => {
                 self.clear_taste();
                 self.settings_error = None;
@@ -192,6 +222,11 @@ impl YtMusicApp {
                 let api_secret = self.lastfm_secret_draft.trim().to_owned();
                 self.lastfm_key_draft.clone_from(&api_key);
                 self.lastfm_secret_draft.clone_from(&api_secret);
+                // The user's own pair if typed in, else MusiKPL's.
+                let Some((key, secret)) = app_keys(&api_key, &api_secret) else {
+                    self.settings_error = Some("Enter your API key and shared secret first".into());
+                    return;
+                };
                 self.settings.lastfm.api_key.clone_from(&api_key);
                 self.settings.lastfm.api_secret.clone_from(&api_secret);
                 self.settings.lastfm.session_key.clear();
@@ -199,7 +234,7 @@ impl YtMusicApp {
                 self.settings_error = None;
                 self.save_settings();
                 self.lastfm_connect = LastFmConnect::Starting;
-                self.lastfm.connect(api_key, api_secret);
+                self.lastfm.connect(key, secret);
             }
             SettingsAction::LastFmCancel => {
                 self.lastfm.cancel_connect();
@@ -208,6 +243,9 @@ impl YtMusicApp {
             SettingsAction::LastFmDisconnect => {
                 self.settings.lastfm.session_key.clear();
                 self.settings.lastfm.username.clear();
+                self.browse.profile = None;
+                self.browse.my_avatar = None;
+                self.browse.my_scrobbles = None;
                 self.settings_error = None;
                 self.save_settings();
             }

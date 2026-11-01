@@ -186,6 +186,12 @@ impl YtMusicApp {
             return;
         }
         self.library.last_tick = Some(Instant::now());
+        // Linux: switch to MusiKPL's own yt-dlp once it has downloaded.
+        if let Some(managed) = crate::infrastructure::bundled::managed_yt_dlp() {
+            if self.tools.yt_dlp != managed {
+                self.tools.yt_dlp = managed;
+            }
+        }
         self.save_library(false);
         self.request_tags();
         self.refresh_home(false);
@@ -305,9 +311,18 @@ impl YtMusicApp {
         }
     }
 
+    /// Like or unlike a song; with Last.fm connected, it is loved or
+    /// unloved on the user's profile too.
     pub(super) fn toggle_like(&mut self, track: &Track) {
-        self.library.taste.toggle_like(track, unix_now());
+        let liked = self.library.taste.toggle_like(track, unix_now());
         self.library.taste_changed();
+        if let Some(credentials) = self.credentials() {
+            self.lastfm.submit(LastFmJob::Love {
+                credentials,
+                song: song_info(track),
+                love: liked,
+            });
+        }
     }
 
     pub(super) fn is_liked(&self, id: &str) -> bool {
@@ -349,6 +364,7 @@ impl YtMusicApp {
         let plans = plan_home(
             &self.library.taste,
             &self.settings.favorite_genres,
+            &self.followed_artists(),
             now,
             &mut Rng::from_time(),
         );

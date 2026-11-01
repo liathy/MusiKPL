@@ -6,9 +6,11 @@ use eframe::egui::{
 };
 
 use crate::{
-    domain::{CoverArt, Playlists, Track},
+    domain::{Cover, CoverArt, Playlists, Track},
+    lastfm::browse::ArtistHit,
     theme::Theme,
     ui::{
+        artist::{artist_card, compact},
         fonts,
         icons::{paint_icon, IconTextures},
         layout::grid_columns,
@@ -24,6 +26,17 @@ pub(crate) enum ResultAction {
     AddToMix(Track),
     ToggleLike(Track),
     AddToPlaylist(Track, PlaylistTarget),
+    /// An artist card on the Search screen: open their page.
+    OpenArtist(String),
+    /// A person found by the search: open their Last.fm profile.
+    OpenUser(String),
+}
+
+/// A Last.fm user found by a search, ready to show.
+pub(crate) struct PersonCard<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) scrobbles: u64,
+    pub(crate) avatar: Option<Cover>,
 }
 
 pub(crate) struct ResultsView<'a> {
@@ -37,6 +50,11 @@ pub(crate) struct ResultsView<'a> {
     pub(crate) in_mix: &'a dyn Fn(&str) -> bool,
     pub(crate) liked: &'a dyn Fn(&str) -> bool,
     pub(crate) playlists: &'a Playlists,
+    /// Artists Last.fm found for the search, with their photos.
+    pub(crate) artists: &'a [ArtistHit],
+    pub(crate) artist_photos: &'a [Option<Cover>],
+    /// People (Last.fm users) whose name is the search.
+    pub(crate) people: &'a [PersonCard<'a>],
 }
 
 pub(crate) fn show_results(
@@ -61,6 +79,7 @@ pub(crate) fn show_results(
                     .show(ui, |ui| {
                         header(ui, view, &theme, r);
                         ui.add_space(r.rem(1.25));
+                        artist_strip(ui, view, icons, &theme, r, &mut actions);
                         grid(ui, view, icons, &theme, r, &mut actions);
                     });
             });
@@ -86,6 +105,92 @@ fn header(ui: &mut Ui, view: &ResultsView<'_>, theme: &Theme, r: &ResponsiveUi) 
             widgets::spinner(ui, r.rem(1.125));
         }
     });
+}
+
+/// Small cards for artists matching the search; each opens their page.
+fn artist_strip(
+    ui: &mut Ui,
+    view: &ResultsView<'_>,
+    icons: &IconTextures,
+    theme: &Theme,
+    r: &ResponsiveUi,
+    actions: &mut Vec<ResultAction>,
+) {
+    if view.artists.is_empty() && view.people.is_empty() {
+        return;
+    }
+    if !view.people.is_empty() {
+        ui.label(
+            egui::RichText::new("People")
+                .font(fonts::display(r.rem(1.25)))
+                .color(theme.text),
+        );
+        ui.add_space(r.rem(0.375));
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = r.rem2(0.5, 0.5);
+            for person in view.people {
+                let subtitle = format!("{} scrobbles · Last.fm", compact(person.scrobbles));
+                if artist_card(
+                    ui,
+                    r.rem(14.0),
+                    person.name,
+                    &subtitle,
+                    person.avatar.as_ref(),
+                    icons,
+                    r,
+                )
+                .on_hover_text("Open profile")
+                .clicked()
+                {
+                    actions.push(ResultAction::OpenUser(person.name.to_owned()));
+                }
+            }
+        });
+        ui.add_space(r.rem(1.0));
+    }
+    if view.artists.is_empty() {
+        ui.label(
+            egui::RichText::new("Songs")
+                .font(fonts::display(r.rem(1.25)))
+                .color(theme.text),
+        );
+        ui.add_space(r.rem(0.375));
+        return;
+    }
+    ui.label(
+        egui::RichText::new("Artists")
+            .font(fonts::display(r.rem(1.25)))
+            .color(theme.text),
+    );
+    ui.add_space(r.rem(0.375));
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = r.rem2(0.5, 0.5);
+        for (index, artist) in view.artists.iter().take(6).enumerate() {
+            let photo = view.artist_photos.get(index).cloned().flatten();
+            let subtitle = format!("{} listeners", compact(artist.listeners));
+            if artist_card(
+                ui,
+                r.rem(14.0),
+                &artist.name,
+                &subtitle,
+                photo.as_ref(),
+                icons,
+                r,
+            )
+            .on_hover_text("Open artist")
+            .clicked()
+            {
+                actions.push(ResultAction::OpenArtist(artist.name.clone()));
+            }
+        }
+    });
+    ui.add_space(r.rem(1.0));
+    ui.label(
+        egui::RichText::new("Songs")
+            .font(fonts::display(r.rem(1.25)))
+            .color(theme.text),
+    );
+    ui.add_space(r.rem(0.375));
 }
 
 fn grid(

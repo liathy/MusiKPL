@@ -311,6 +311,11 @@ impl Preferences {
         ranked.into_iter().map(|(_, _, track)| track).collect()
     }
 
+    /// Treat an artist as a top favorite (a bookmarked one, say).
+    pub(crate) fn favor(&mut self, artist: &str) {
+        self.artists.insert(artist.to_lowercase(), 1.0);
+    }
+
     pub(crate) fn knows_artist(&self, track: &Track) -> bool {
         self.artists
             .contains_key(&song_info(track).artist.to_lowercase())

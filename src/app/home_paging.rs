@@ -116,6 +116,7 @@ impl YtMusicApp {
         let plans = plan_more_rows(
             &self.library.taste,
             &self.settings.favorite_genres,
+            &self.followed_artists(),
             unix_now(),
             &shown,
             &mut Rng::from_time(),

@@ -25,7 +25,7 @@ pub(crate) struct Credentials {
     pub(crate) session_key: String,
 }
 
-type Params = Vec<(&'static str, String)>;
+pub(super) type Params = Vec<(&'static str, String)>;
 
 /// The `api_sig` for a signed call.
 pub(crate) fn sign(params: &[(&str, String)], secret: &str) -> String {
@@ -49,13 +49,13 @@ fn signed(mut params: Params, secret: &str) -> Params {
     params
 }
 
-enum ApiError {
+pub(super) enum ApiError {
     Network(String),
     Api { code: i64, message: String },
 }
 
 impl ApiError {
-    fn describe(self) -> String {
+    pub(super) fn describe(self) -> String {
         match self {
             Self::Network(message) => format!("Could not reach Last.fm: {message}"),
             Self::Api { code: 10, .. } => "Last.fm doesn't recognize that API key".into(),
@@ -104,7 +104,7 @@ fn parse_reply(body: &str) -> Result<Value, ApiError> {
     Ok(value)
 }
 
-fn get(params: Params) -> Result<Value, ApiError> {
+pub(super) fn get(params: Params) -> Result<Value, ApiError> {
     let mut request = agent().get(API_ROOT);
     for (name, value) in &params {
         request = request.query(name, value);
@@ -205,6 +205,17 @@ pub(crate) fn update_now_playing(
     post(signed(params, &credentials.api_secret))
         .map(|_| ())
         .map_err(ApiError::describe)
+}
+
+/// Love or unlove a track on the user's Last.fm profile.
+pub(crate) fn love(credentials: &Credentials, song: &SongInfo, love: bool) -> Result<(), String> {
+    let method = if love { "track.love" } else { "track.unlove" };
+    post(signed(
+        song_params(method, credentials, song),
+        &credentials.api_secret,
+    ))
+    .map(|_| ())
+    .map_err(ApiError::describe)
 }
 
 pub(crate) fn scrobble(

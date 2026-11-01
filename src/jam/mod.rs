@@ -1514,6 +1514,9 @@ mod tests {
             "song-b"
         );
 
+        // The joining snapshot (revision 1) may arrive while joining or just
+        // after, depending on timing; the changes after it are what count.
+        reasons.retain(|(revision, _)| *revision >= 2);
         assert_eq!(
             reasons,
             vec![

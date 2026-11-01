@@ -2,6 +2,7 @@
 
 mod app;
 mod domain;
+mod friends;
 mod infrastructure;
 mod jam;
 mod lastfm;

@@ -31,6 +31,7 @@ pub(crate) fn run() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Uninstall MusiKPL")
+            .with_icon(crate::app::window_icon())
             .with_inner_size(vec2(520.0, 330.0))
             .with_resizable(false)
             .with_maximize_button(false),

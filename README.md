@@ -14,7 +14,8 @@ MusiKPL brings music discovery, queue management, automatic mixes, synchronized 
 
 - **Home** — MusiKPL opens on Home: rows of songs picked from what you listen to most ("Because you like …"), your Liked songs, a Discover row of artists you haven't heard yet, and Recently played. On first run you pick a few favorite genres (from pop and rock to hardstyle, hardcore, frenchcore, hardtekk, phonk, Russian rap and more). Home picks new songs every time you open MusiKPL or press Refresh, and it scrolls forever: rows load more songs as you reach their end, and more rows appear as you reach the bottom.
 - **Your Taste, Kept Locally** — MusiKPL learns from how long you listen, what you finish, what you skip, and what you ♥ like, and looks up each song's genres on Last.fm. It all stays on your PC, in `%APPDATA%\MusiKPL`. Clear it any time in Settings.
-- **YouTube Music Search** — Search for songs, artists, or albums, or paste a YouTube link. Results appear as a grid of cover cards, and the search box remembers your recent searches.
+- **YouTube Music Search** — Search for songs, artists, or albums, or paste a YouTube link. Songs appear as a grid of cover cards, with matching **artists** (and a **person**, when you type an exact Last.fm username) above them. The search box remembers your recent searches.
+- **Artist Pages** — Open any artist for their photo, listeners, genres, bio, top songs (play them or add them to the mix) and similar artists. **Bookmark** artists to keep them in the menu: they get their own Home rows ("From …", "Similar to …") and Auto Mix favours them.
 - **Audio Streaming** — Best-quality audio resolved with `yt-dlp` and played with `mpv`.
 - **Playback Controls** — Play, pause, skip tracks, seek through songs, and adjust volume.
 - **Cover Art** — Each song's YouTube cover, cropped square; it loads straight away and never changes.
@@ -29,11 +30,12 @@ MusiKPL brings music discovery, queue management, automatic mixes, synchronized 
 - **LAN Jam** — Listen together over your local network with synchronized playback; join nearby Jams with one click. Works on PCs with VPN or virtual network adapters too.
 - **Internet Jam** — Invite friends anywhere with a copy-paste invite: no account, no port forwarding. Connections are end-to-end encrypted, and only people with the invite can join.
 - **Shared Jam Queue** — Everyone in a Jam sees the host's queue, and guests add songs to it with **+**. The host controls playback and is the only one who can remove songs.
-- **Last.fm Scrobbling** — Now playing and scrobbles, following Last.fm's rules.
-- **Start with Windows** — Optional, from Settings.
+- **Last.fm** — Connect in one click (or create an account) from **Settings → Last.fm**. MusiKPL scrobbles what you play, ♥ loves songs on your Last.fm profile too, and shows your **profile** from the menu: scrobbles, top artists and songs for any period, and recent plays.
+- **Friends** — Add friends from their Last.fm profile, swap friend codes once, and see who has MusiKPL open. Invite online friends to the Jam you're hosting in one click; their invite shows as a pop-up (or quietly in the menu, your choice in Settings). Peer-to-peer and encrypted, with no server; only people on your friends list can reach you.
+- **Start with Windows** and **Close to tray** — Optional, from Settings. With close to tray, ✕ hides MusiKPL next to the clock and the music keeps playing.
 - **Updates Built In** — Open the menu and press **Check for updates** at the bottom. When a new release is out, **Install update** downloads it, restarts MusiKPL on the new version, and keeps all your data.
 - **Minimalist Interface** — A black design with the Baloo Thambi typefaces, smooth hover animations, and scrolling titles for long names.
-- **Native Desktop Experience** — Built in Rust with `egui` / `eframe`, with its own title bar: drag the top bar to move the window, and use its minimize and close buttons.
+- **Native Desktop Experience** — Built in Rust with `egui` / `eframe`, with its own title bar: drag the top bar to move the window, double-click it (or use its button) to maximize, and drag the edges to resize.
 
 ## 🖥️ Screenshots
 
@@ -56,11 +58,10 @@ Both update themselves from the menu's **Check for updates**. Your data is never
 
 ### Linux (Ubuntu and others)
 
-Download **`MusiKPL-linux-x86_64`** from the same release. It runs on Ubuntu 20.04 and newer (and other 64-bit Linux desktops, X11 or Wayland). On Linux MusiKPL uses the system's `mpv` and `yt-dlp`:
+Download **`MusiKPL-linux-x86_64`** from the same release. It runs on Ubuntu 20.04 and newer (and other 64-bit Linux desktops, X11 or Wayland). It needs the system's `mpv`; MusiKPL downloads its own up-to-date `yt-dlp` on first start and keeps it updated (Ubuntu's own yt-dlp package is too old for YouTube):
 
 ```bash
-sudo apt install mpv pipx
-pipx install yt-dlp            # Ubuntu's own yt-dlp package is usually too old for YouTube
+sudo apt install mpv
 chmod +x MusiKPL-linux-x86_64
 ./MusiKPL-linux-x86_64
 ```
@@ -86,22 +87,27 @@ Everything MusiKPL remembers is in `%APPDATA%\MusiKPL` (on Linux, `~/.local/shar
 | `home.json` | The latest Home, so it opens instantly |
 | `playlists.json` | Your playlists |
 | `covers\` | Cover photos you chose for playlists (small square copies) |
+| `artists.json` | Bookmarked artists |
+| `artist_images.json` | Which YouTube picture is each artist's photo |
+| `friends.json` | Your friends |
+| `friend-key.txt` | This PC's private key behind your friend code (keep it private) |
 
-Genres come from Last.fm using MusiKPL's built-in read-only key, so they work without an account. Entering your own API key in Settings uses yours instead.
+Genres, artist pages and profiles come from Last.fm with MusiKPL's built-in key, so they work without an account.
 
-To scrobble to Last.fm:
+To connect your Last.fm account (scrobbling, loves, your profile):
 
-1. Create an API account at https://www.last.fm/api/account/create.
-2. In MusiKPL, open the menu, then **Settings → Last.fm**, and enter the API key and shared secret.
-3. Press **Connect** and approve MusiKPL in your browser. Your username fills in automatically; your password is never entered in MusiKPL.
+1. In MusiKPL, open **Settings → Last.fm** and press **Connect with Last.fm** (or **Create a Last.fm account** first).
+2. Approve MusiKPL in your browser. Your username fills in automatically; your password is never entered in MusiKPL.
+
+Prefer your own API key? Choose **Use my own API key instead** on the same page.
 
 ## 🪶 Lightweight by Design
 
-- The window has a fixed size: at startup it takes the design's 1440 × 1024 proportions, as large as fits your screen, and every size is in rem units, so the whole layout scales with the screen.
+- The window opens at the design's 1440 × 1024 proportions, as large as fits your screen, and every size is in rem units, so the layout scales with the window (down to 960 × 680).
 - The app draws only when something changes: about 0 % CPU when idle and around 5 % of one core while a long title scrolls, with frames capped at 60 per second.
 - `yt-dlp` runs only for a few seconds per search or song lookup, and `mpv` only while music plays.
 - Nothing is drawn while the window is minimized; playback, Jams, and scrobbling keep running.
-- Internet Jam networking starts only while an internet Jam is active and stops when it ends.
+- Internet Jam networking starts only while an internet Jam is active and stops when it ends. Friends use one background thread, started only once you have a friend with a code, and check who's online only every minute while the menu is open (every 5 minutes otherwise).
 - Home is built by one `yt-dlp` search at a time and opens instantly from its saved copy. Covers load only for cards scrolled into view, and YouTube Mixes are read only as far as needed.
 - Extra fonts for other languages load only when a title needs them.
 - Your data is saved in the background, at most every 10 seconds and when the app closes.
