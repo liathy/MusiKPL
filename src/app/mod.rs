@@ -448,7 +448,15 @@ impl YtMusicApp {
                     let old = std::mem::replace(&mut self.results, items);
                     self.retire_covers(old);
                 }
-                Err(e) => self.error = Some(AppError::Search(e)),
+                Err(e) => {
+                    // Old results would read as this search's; clear them so
+                    // Last.fm's songs can show instead.
+                    let old = std::mem::take(&mut self.results);
+                    self.retire_covers(old);
+                    if self.browse.tracks.is_empty() {
+                        self.error = Some(AppError::Search(e));
+                    }
+                }
             }
         }
 
@@ -617,6 +625,12 @@ impl YtMusicApp {
             ResultAction::ToggleLike(track) => self.toggle_like(&track),
             ResultAction::OpenArtist(name) => self.open_artist(&name),
             ResultAction::OpenUser(name) => self.open_user_profile(&name),
+            ResultAction::PlayLastFm { artist, title } => {
+                self.find_and_play(&artist, &title, lastfm_browse::SongIntent::Play)
+            }
+            ResultAction::AddLastFm { artist, title } => {
+                self.find_and_play(&artist, &title, lastfm_browse::SongIntent::AddToMix)
+            }
             ResultAction::AddToPlaylist(track, target) => self.add_to_playlist(track, target),
             // A guest's picks become requests; only the host's queue plays.
             ResultAction::Play(track) | ResultAction::AddToMix(track) if guest => {
@@ -823,6 +837,8 @@ impl YtMusicApp {
                                 playlists: &self.library.playlists,
                                 artists: &self.browse.artists,
                                 artist_photos: &photos.search,
+                                lastfm_songs: &self.browse.tracks,
+                                finding_song: self.browse.finding_song(),
                                 people: &self
                                     .browse
                                     .people

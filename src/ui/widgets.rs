@@ -376,7 +376,13 @@ pub(crate) fn text_field(
     ui.put(rect, edit)
 }
 
-/// Text that may not fit: painted on one line with an ellipsis.
+/// Text that may not fit, on one line: when too long it scrolls back and
+/// forth like the footer's song info, instead of ending in "…".
+///
+/// Kept cheap because many lines use it at once (cards, queue, lists): all
+/// of them move on one shared clock, so they pause together and no frames
+/// are drawn during the pauses; lines that fit, or are off screen, never ask
+/// for frames; the laid-out text comes from egui's cache.
 pub(crate) fn elided(
     painter: &egui::Painter,
     rect: Rect,
@@ -385,24 +391,66 @@ pub(crate) fn elided(
     color: Color32,
     align: Align2,
 ) {
-    crate::ui::fonts::cover(painter.ctx(), text);
-    let mut job = LayoutJob::single_section(
-        text.to_owned(),
-        TextFormat {
-            font_id: font,
-            color,
-            ..TextFormat::default()
-        },
-    );
-    job.wrap.max_width = rect.width().max(0.0);
-    job.wrap.max_rows = 1;
-    job.wrap.break_anywhere = true;
-    job.wrap.overflow_character = Some('…');
-    let galley = painter.layout_job(job);
-    let pos = align.align_size_within_rect(galley.size(), rect).min;
-    painter
-        .with_clip_rect(rect.expand(1.0))
-        .galley(pos, galley, color);
+    let ctx = painter.ctx();
+    crate::ui::fonts::cover(ctx, text);
+    let gap = font.size * 0.75;
+    let galley = painter.layout_no_wrap(text.to_owned(), font, color);
+    let overflow = galley.size().x - rect.width();
+    let clip = rect.expand(1.0).intersect(painter.clip_rect());
+    if overflow <= 0.5 {
+        let pos = align.align_size_within_rect(galley.size(), rect).min;
+        painter.with_clip_rect(clip).galley(pos, galley, color);
+        return;
+    }
+    let distance = overflow + gap;
+    let time = ctx.input(|input| input.time);
+    let (amount, still_for) = synced_marquee(time);
+    if clip.is_positive() {
+        let next = if still_for > 0.0 {
+            Duration::from_secs_f64(still_for)
+        } else {
+            MARQUEE_FRAME
+        };
+        repaint_after(ctx, next);
+    }
+    // Left-aligned while scrolling; the vertical alignment is kept.
+    let row = align.align_size_within_rect(galley.size(), rect);
+    let pos = pos2(rect.left() - distance * amount, row.top());
+    painter.with_clip_rect(clip).galley(pos, galley, color);
+}
+
+/// How far along (0 to 1) every scrolling line is, `time` seconds in, and
+/// how long it stays there (zero while moving). One cycle for all lines:
+/// wait, slide to the end, wait, slide back.
+pub(crate) fn synced_marquee(time: f64) -> (f32, f64) {
+    const PAUSE: f64 = 2.0;
+    const TRAVEL: f64 = 3.5;
+    const CYCLE: f64 = 2.0 * (PAUSE + TRAVEL);
+    let phase = time.rem_euclid(CYCLE);
+    let eased = |t: f64| {
+        let t = t.clamp(0.0, 1.0);
+        (t * t * (3.0 - 2.0 * t)) as f32
+    };
+    if phase < PAUSE {
+        (0.0, PAUSE - phase)
+    } else if phase < PAUSE + TRAVEL {
+        (eased((phase - PAUSE) / TRAVEL), 0.0)
+    } else if phase < 2.0 * PAUSE + TRAVEL {
+        (1.0, 2.0 * PAUSE + TRAVEL - phase)
+    } else {
+        (1.0 - eased((phase - 2.0 * PAUSE - TRAVEL) / TRAVEL), 0.0)
+    }
+}
+
+/// A one-line label that scrolls when it doesn't fit (see [`elided`]).
+pub(crate) fn scrolling_label(ui: &mut Ui, text: &str, font: FontId, color: Color32) -> Response {
+    let height = ui.fonts(|fonts| fonts.row_height(&font));
+    let (rect, response) =
+        ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+    if ui.is_rect_visible(rect) {
+        elided(ui.painter(), rect, text, font, color, Align2::LEFT_CENTER);
+    }
+    response
 }
 
 /// Small spaced capitals ("APP SETTINGS").
@@ -601,6 +649,15 @@ pub(crate) fn item_id(salt: &str, key: &str) -> Id {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_scrolling_line_shares_one_cycle() {
+        assert_eq!(synced_marquee(1.0), (0.0, 1.0));
+        let (middle, still) = synced_marquee(2.0 + 1.75);
+        assert!((middle - 0.5).abs() < 0.001 && still == 0.0);
+        assert_eq!(synced_marquee(6.0), (1.0, 1.5));
+        assert_eq!(synced_marquee(11.0 + 1.0), (0.0, 1.0));
+    }
 
     #[test]
     fn marquee_waits_slides_waits_and_returns() {

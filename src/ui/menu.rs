@@ -484,6 +484,8 @@ pub(crate) enum FriendStatus {
 
 pub(crate) struct FriendItem<'a> {
     pub(crate) name: &'a str,
+    /// Their Last.fm picture; their initial is drawn without one.
+    pub(crate) avatar: Option<crate::domain::Cover>,
     pub(crate) status: FriendStatus,
     /// They invited us (shown as a Join button when invites are quiet).
     pub(crate) invited_us: bool,
@@ -596,7 +598,7 @@ pub(crate) fn friends_list(
             pos2(rect.left() + r.rem(0.375), rect.center().y - r.rem(1.125)),
             r.rem2(2.25, 2.25),
         );
-        crate::ui::artist::round_photo(ui, photo, friend.name, None, icons);
+        crate::ui::artist::round_photo(ui, photo, friend.name, friend.avatar.as_ref(), icons);
         // Online dot on the photo.
         if friend.status == FriendStatus::Online {
             let dot = pos2(photo.right() - r.rem(0.25), photo.bottom() - r.rem(0.25));

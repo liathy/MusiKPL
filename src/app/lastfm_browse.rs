@@ -75,6 +75,8 @@ pub(super) struct Browse {
     /// opening someone else's profile doesn't replace them.
     pub(super) my_avatar: Option<String>,
     pub(super) my_scrobbles: Option<u64>,
+    /// Songs Last.fm found for the search, shown when YouTube finds none.
+    pub(super) tracks: Vec<crate::lastfm::browse::TrackHit>,
     /// Last.fm users found by the search (an exact username match).
     pub(super) people: Vec<Profile>,
     profile_at: Option<Instant>,
@@ -118,6 +120,7 @@ impl YtMusicApp {
     /// With a song search, look for artists of that name too.
     pub(super) fn search_artists(&mut self, query: &str) {
         self.browse.artists.clear();
+        self.browse.tracks.clear();
         self.browse.people.clear();
         self.browse.artists_query = query.to_owned();
         let single = query.starts_with("http://") || query.starts_with("https://");
@@ -126,9 +129,35 @@ impl YtMusicApp {
                 api_key: api_key.clone(),
                 query: query.to_owned(),
             });
+            self.lastfm.browse(BrowseRequest::Tracks {
+                api_key: api_key.clone(),
+                query: query.to_owned(),
+            });
             self.lastfm.browse(BrowseRequest::People {
                 api_key,
                 query: query.to_owned(),
+            });
+        }
+    }
+
+    /// Fetch friends' Last.fm pictures, once a run each, so the Friends
+    /// card shows them (a saved one shows meanwhile).
+    pub(super) fn request_friend_avatars(&mut self) {
+        let Some(api_key) = self.lookup_key() else {
+            return;
+        };
+        let users: Vec<String> = self
+            .friends
+            .list
+            .iter()
+            .filter_map(|friend| friend.lastfm.clone())
+            .filter(|user| !self.friends.avatars_asked.contains(&user.to_lowercase()))
+            .collect();
+        for user in users {
+            self.friends.avatars_asked.insert(user.to_lowercase());
+            self.lastfm.browse(BrowseRequest::People {
+                api_key: api_key.clone(),
+                query: user,
             });
         }
     }
@@ -248,7 +277,17 @@ impl YtMusicApp {
                     self.browse.artists = result.unwrap_or_default();
                 }
             }
+            LastFmEvent::Tracks { query, result } => {
+                if query == self.browse.artists_query {
+                    self.browse.tracks = result.unwrap_or_default();
+                }
+            }
             LastFmEvent::People { query, result } => {
+                if self.friends.is_friend(&query) {
+                    if let Ok(Some(person)) = &result {
+                        self.set_friend_avatar(&query, person.image.clone());
+                    }
+                }
                 if query == self.browse.artists_query {
                     self.browse.people = result.ok().flatten().into_iter().collect();
                 }

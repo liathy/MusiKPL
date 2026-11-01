@@ -97,6 +97,7 @@ impl YtMusicApp {
                 LastFmEvent::Artists { .. }
                 | LastFmEvent::Artist { .. }
                 | LastFmEvent::People { .. }
+                | LastFmEvent::Tracks { .. }
                 | LastFmEvent::Profile { .. } => {}
             }
         }

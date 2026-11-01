@@ -110,6 +110,11 @@ pub(crate) enum LastFmEvent {
         name: String,
         result: Result<browse::ArtistPage, String>,
     },
+    /// Songs Last.fm found for a search.
+    Tracks {
+        query: String,
+        result: Result<Vec<browse::TrackHit>, String>,
+    },
     /// The Last.fm user whose name is the search, if any.
     People {
         query: String,
@@ -143,6 +148,10 @@ pub(crate) enum BrowseRequest {
         name: String,
     },
     People {
+        api_key: String,
+        query: String,
+    },
+    Tracks {
         api_key: String,
         query: String,
     },
@@ -197,6 +206,10 @@ impl LastFm {
             let event = match request {
                 BrowseRequest::Artists { api_key, query } => LastFmEvent::Artists {
                     result: browse::search_artists(&api_key, &query),
+                    query,
+                },
+                BrowseRequest::Tracks { api_key, query } => LastFmEvent::Tracks {
+                    result: browse::search_tracks(&api_key, &query),
                     query,
                 },
                 BrowseRequest::People { api_key, query } => LastFmEvent::People {

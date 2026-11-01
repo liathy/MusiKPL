@@ -12,6 +12,14 @@ pub(crate) struct ArtistHit {
     pub(crate) listeners: u64,
 }
 
+/// A song Last.fm found for a search.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TrackHit {
+    pub(crate) artist: String,
+    pub(crate) title: String,
+    pub(crate) listeners: u64,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TopTrack {
     pub(crate) title: String,
@@ -135,6 +143,30 @@ pub(crate) fn search_artists(api_key: &str, query: &str) -> Result<Vec<ArtistHit
     Ok(parse_artist_hits(
         value.pointer("/results/artistmatches/artist"),
     ))
+}
+
+/// Songs matching a search, most listened first (as Last.fm orders them).
+pub(crate) fn search_tracks(api_key: &str, query: &str) -> Result<Vec<TrackHit>, String> {
+    let value = call(
+        "track.search",
+        api_key,
+        vec![("track", query.into()), ("limit", "12".into())],
+    )?;
+    Ok(parse_track_hits(
+        value.pointer("/results/trackmatches/track"),
+    ))
+}
+
+fn parse_track_hits(value: Option<&Value>) -> Vec<TrackHit> {
+    list(value)
+        .into_iter()
+        .map(|track| TrackHit {
+            artist: text(track.get("artist")),
+            title: text(track.get("name")),
+            listeners: number(track.get("listeners")),
+        })
+        .filter(|track| !track.title.is_empty() && !track.artist.is_empty())
+        .collect()
 }
 
 fn parse_artist_hits(value: Option<&Value>) -> Vec<ArtistHit> {
@@ -335,6 +367,26 @@ fn parse_profile_tracks(value: Option<&Value>) -> Vec<ProfileTrack> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn track_search_results_are_read() {
+        let value: Value = serde_json::from_str(
+            r#"{"results":{"trackmatches":{"track":[
+                {"name":"Spaceman","artist":"Hardwell","listeners":"412000"},
+                {"name":"","artist":"Nobody","listeners":"1"}
+            ]}}}"#,
+        )
+        .unwrap();
+        let hits = parse_track_hits(value.pointer("/results/trackmatches/track"));
+        assert_eq!(
+            hits,
+            vec![TrackHit {
+                artist: "Hardwell".into(),
+                title: "Spaceman".into(),
+                listeners: 412_000,
+            }]
+        );
+    }
 
     #[test]
     fn artist_search_results_are_read_and_single_results_too() {

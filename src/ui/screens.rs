@@ -7,7 +7,7 @@ use eframe::egui::{
 
 use crate::{
     domain::{Cover, CoverArt, Playlists, Track},
-    lastfm::browse::ArtistHit,
+    lastfm::browse::{ArtistHit, TrackHit},
     theme::Theme,
     ui::{
         artist::{artist_card, compact},
@@ -30,6 +30,15 @@ pub(crate) enum ResultAction {
     OpenArtist(String),
     /// A person found by the search: open their Last.fm profile.
     OpenUser(String),
+    /// A song Last.fm found: find it on YouTube, then play it or add it.
+    PlayLastFm {
+        artist: String,
+        title: String,
+    },
+    AddLastFm {
+        artist: String,
+        title: String,
+    },
 }
 
 /// A Last.fm user found by a search, ready to show.
@@ -55,6 +64,10 @@ pub(crate) struct ResultsView<'a> {
     pub(crate) artist_photos: &'a [Option<Cover>],
     /// People (Last.fm users) whose name is the search.
     pub(crate) people: &'a [PersonCard<'a>],
+    /// Songs Last.fm found, shown when YouTube's search finds none.
+    pub(crate) lastfm_songs: &'a [TrackHit],
+    /// A Last.fm song is being looked up on YouTube.
+    pub(crate) finding_song: bool,
 }
 
 pub(crate) fn show_results(
@@ -67,7 +80,8 @@ pub(crate) fn show_results(
     let theme = Theme::default();
     let mut actions = Vec::new();
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(area), |ui| {
-        if view.results.is_empty() {
+        let fallback = view.results.is_empty() && !view.searching && !view.lastfm_songs.is_empty();
+        if view.results.is_empty() && !fallback {
             empty_state(ui, area, view, &theme, r);
             return;
         }
@@ -80,7 +94,11 @@ pub(crate) fn show_results(
                         header(ui, view, &theme, r);
                         ui.add_space(r.rem(1.25));
                         artist_strip(ui, view, icons, &theme, r, &mut actions);
-                        grid(ui, view, icons, &theme, r, &mut actions);
+                        if fallback {
+                            lastfm_songs(ui, view, &theme, r, &mut actions);
+                        } else {
+                            grid(ui, view, icons, &theme, r, &mut actions);
+                        }
                     });
             });
     });
@@ -191,6 +209,101 @@ fn artist_strip(
             .color(theme.text),
     );
     ui.add_space(r.rem(0.375));
+}
+
+/// When YouTube's search finds nothing: the songs Last.fm knows, as rows.
+/// Each is looked up on YouTube when played.
+fn lastfm_songs(
+    ui: &mut Ui,
+    view: &ResultsView<'_>,
+    theme: &Theme,
+    r: &ResponsiveUi,
+    actions: &mut Vec<ResultAction>,
+) {
+    use crate::ui::widgets::{pill_button, PillKind, PillSize};
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(
+                "YouTube's search found nothing, so these come from Last.fm. Picking one finds it on YouTube.",
+            )
+            .font(fonts::body(r.rem(0.875)))
+            .color(theme.secondary_text),
+        );
+        if view.finding_song {
+            widgets::spinner(ui, r.rem(1.0));
+        }
+    });
+    ui.add_space(r.rem(0.5));
+    let (add, play) = if view.guest {
+        ("Request", "Request")
+    } else {
+        ("Add to mix", "Play")
+    };
+    for (index, song) in view.lastfm_songs.iter().enumerate() {
+        let width = ui.available_width();
+        let (rect, row) = ui.allocate_exact_size(vec2(width, r.rem(3.25)), Sense::hover());
+        let hover = pointer_amount(ui, &row);
+        ui.painter().rect_filled(
+            rect,
+            r.rem(0.5),
+            mix(
+                Color32::TRANSPARENT,
+                Color32::from_rgba_unmultiplied(34, 34, 34, 153),
+                hover,
+            ),
+        );
+        let buttons = Rect::from_min_max(
+            pos2(rect.right() - r.rem(13.0), rect.top()),
+            pos2(rect.right() - r.rem(0.75), rect.bottom()),
+        );
+        let text_right = buttons.left() - r.rem(0.75);
+        let left = rect.left() + r.rem(0.75);
+        let painter = ui.painter();
+        elided(
+            painter,
+            Rect::from_min_max(pos2(left, rect.top()), pos2(text_right, rect.center().y)),
+            &song.title,
+            fonts::body(r.rem(1.0)),
+            theme.text,
+            Align2::LEFT_BOTTOM,
+        );
+        let detail = if song.listeners > 0 {
+            format!("{} · {} listeners", song.artist, compact(song.listeners))
+        } else {
+            song.artist.clone()
+        };
+        elided(
+            painter,
+            Rect::from_min_max(
+                pos2(left, rect.center().y + r.rem(0.125)),
+                pos2(text_right, rect.bottom()),
+            ),
+            &detail,
+            fonts::body(r.rem(0.8125)),
+            theme.secondary_text,
+            Align2::LEFT_TOP,
+        );
+        ui.allocate_new_ui(
+            egui::UiBuilder::new()
+                .max_rect(buttons)
+                .layout(egui::Layout::right_to_left(egui::Align::Center))
+                .id_salt(("lastfm_song", index)),
+            |ui| {
+                ui.spacing_mut().item_spacing.x = r.rem(0.5);
+                let song_of = || (song.artist.clone(), song.title.clone());
+                if pill_button(ui, play, PillKind::Primary, PillSize::Small, r).clicked() {
+                    let (artist, title) = song_of();
+                    actions.push(ResultAction::PlayLastFm { artist, title });
+                }
+                if !view.guest
+                    && pill_button(ui, add, PillKind::Secondary, PillSize::Small, r).clicked()
+                {
+                    let (artist, title) = song_of();
+                    actions.push(ResultAction::AddLastFm { artist, title });
+                }
+            },
+        );
+    }
 }
 
 fn grid(

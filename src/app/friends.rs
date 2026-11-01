@@ -35,6 +35,9 @@ pub(crate) struct Friend {
     /// Their friend code's key; without it they can't be seen online.
     #[serde(default)]
     pub(crate) id: Option<String>,
+    /// Their Last.fm picture, remembered between runs.
+    #[serde(default)]
+    pub(crate) avatar: Option<String>,
 }
 
 /// A Jam invite from a friend, waiting for Join or Not now.
@@ -58,6 +61,8 @@ pub(super) struct FriendsState {
     pub(super) code_input: String,
     pub(super) adding: bool,
     notice: Option<(String, Instant)>,
+    /// Last.fm users whose picture was asked for this run.
+    pub(super) avatars_asked: std::collections::HashSet<String>,
 }
 
 impl FriendsState {
@@ -88,6 +93,24 @@ impl FriendsState {
 impl YtMusicApp {
     pub(super) fn load_friends(&mut self) {
         self.friends.list = storage::read(FRIENDS_FILE).unwrap_or_default();
+    }
+
+    /// A friend's Last.fm picture arrived: keep it if it changed.
+    pub(super) fn set_friend_avatar(&mut self, user: &str, image: Option<String>) {
+        let mut changed = false;
+        for friend in &mut self.friends.list {
+            let theirs = friend
+                .lastfm
+                .as_deref()
+                .is_some_and(|name| name.eq_ignore_ascii_case(user));
+            if theirs && friend.avatar != image {
+                friend.avatar.clone_from(&image);
+                changed = true;
+            }
+        }
+        if changed {
+            storage::write_in_background(FRIENDS_FILE, &self.friends.list);
+        }
     }
 
     fn save_friends(&mut self) {
@@ -130,6 +153,7 @@ impl YtMusicApp {
             name: username.to_owned(),
             lastfm: Some(username.to_owned()),
             id: None,
+            avatar: None,
         });
         self.save_friends();
         self.set_friend_notice(format!(
@@ -192,6 +216,7 @@ impl YtMusicApp {
                 name: code.name.clone(),
                 lastfm: None,
                 id: Some(code.id.clone()),
+                avatar: None,
             }),
         }
         self.friends.code_input.clear();
@@ -208,6 +233,7 @@ impl YtMusicApp {
     /// Called every frame: run the service when there are friends to reach,
     /// check presence now and then, and handle invites.
     pub(super) fn tick_friends(&mut self, ctx: &egui::Context) {
+        self.request_friend_avatars();
         let ids = self.friends.ids();
         if ids.is_empty() {
             return;
@@ -355,6 +381,10 @@ impl YtMusicApp {
                     });
                     FriendItem {
                         name: &friend.name,
+                        avatar: friend.avatar.clone().map(|url| crate::domain::Cover {
+                            url,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                        }),
                         status,
                         invited_us,
                     }

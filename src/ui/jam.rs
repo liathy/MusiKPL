@@ -584,26 +584,22 @@ fn show_request(
         .inner_margin(egui::Margin::same(r.rem(0.5)))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(&request.title)
-                        .font(fonts::display(r.rem(1.0)))
-                        .color(theme.text),
-                )
-                .truncate(),
+            crate::ui::widgets::scrolling_label(
+                ui,
+                &request.title,
+                fonts::display(r.rem(1.0)),
+                theme.text,
             );
             let who = if request.mine {
                 "You"
             } else {
                 request.requester.as_str()
             };
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(format!("{who} · {}", status_label(request.status)))
-                        .font(fonts::body(r.rem(0.75)))
-                        .color(theme.secondary_text),
-                )
-                .truncate(),
+            crate::ui::widgets::scrolling_label(
+                ui,
+                &format!("{who} · {}", status_label(request.status)),
+                fonts::body(r.rem(0.75)),
+                theme.secondary_text,
             );
             // Only the host is ever offered request controls.
             if !host {
