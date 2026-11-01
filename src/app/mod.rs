@@ -191,11 +191,14 @@ const JAM_GUEST_TICK: Duration = Duration::from_millis(20);
 impl Default for YtMusicApp {
     fn default() -> Self {
         let registry = ProcessRegistry::default();
-        let mut player = Player::default();
-        player.set_registry(registry.clone());
+        let tools = Tools::discover();
+        let player = Player::new(Box::new(crate::infrastructure::mpv::MpvOutput::new(
+            tools.mpv.clone(),
+            registry.clone(),
+        )));
         Self {
             icons: None,
-            tools: Tools::discover(),
+            tools,
             registry,
             player,
             search: String::new(),
@@ -490,10 +493,7 @@ impl YtMusicApp {
                     // have loaded it, so everyone hears the start together.
                     let hold = self.should_hold_for_guests();
                     let start_at = std::mem::take(&mut self.start_at);
-                    match self
-                        .player
-                        .play_stream_at(&track, &url, &self.tools.mpv, start_at, hold)
-                    {
+                    match self.player.play_stream_at(&track, &url, start_at, hold) {
                         Ok(()) => {
                             self.jam_hold = hold.then(Instant::now);
                             self.error = None;
@@ -601,9 +601,7 @@ impl YtMusicApp {
     }
 
     fn set_volume(&mut self, volume: u8) {
-        self.player.volume = volume;
-        self.player
-            .send(&format!("[\"set_property\",\"volume\",{volume}]"));
+        self.player.set_volume(volume);
         self.settings.volume = volume;
         self.library.settings_changed = true;
     }
@@ -1462,6 +1460,11 @@ mod tests {
         let mut app = YtMusicApp::default();
         app.tools.yt_dlp = "missing-yt-dlp-for-tests".into();
         app.tools.mpv = "missing-mpv-for-tests".into();
+        app.player
+            .set_output(Box::new(crate::infrastructure::mpv::MpvOutput::new(
+                app.tools.mpv.clone(),
+                app.registry.clone(),
+            )));
         app
     }
 

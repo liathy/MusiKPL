@@ -1,0 +1,31 @@
+[package]
+name = "musikpl-core"
+version = "3.4.0"
+edition = "2021"
+description = "MusiKPL's shared core: recommendations, playlists, Last.fm, Jams and friends, for every platform"
+license = "GPL-3.0-or-later"
+
+[lib]
+name = "musikpl_core"
+# rlib for the desktop app; cdylib and staticlib for Android (through UniFFI).
+crate-type = ["rlib"]
+
+[features]
+# For the apps' tests: data goes to a private temporary folder, and a few
+# test helpers become available. Turned on only as a dev-dependency
+# feature, so normal builds never have it.
+testing = []
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Last.fm API calls and update checks (blocking, on worker threads).
+ureq = "2"
+md5 = "0.7"
+# Internet Jams and friends: encrypted peer-to-peer connections.
+iroh = "1.4"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros"] }
+base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock"] }

@@ -16,6 +16,7 @@ dependencies = [
  "iroh",
  "md5",
  "miniz_oxide 0.8.9",
+ "musikpl-core",
  "raw-window-handle",
  "resvg",
  "serde",
@@ -2621,6 +2622,20 @@ checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
 dependencies = [
  "num-traits",
  "pxfm",
+]
+
+[[package]]
+name = "musikpl-core"
+version = "3.4.0"
+dependencies = [
+ "base64 0.22.1",
+ "iroh",
+ "md5",
+ "serde",
+ "serde_json",
+ "tokio",
+ "ureq",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

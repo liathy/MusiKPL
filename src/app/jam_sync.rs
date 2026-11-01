@@ -286,10 +286,7 @@ impl YtMusicApp {
         } else {
             expected
         };
-        match self
-            .player
-            .play_stream_at(&track, url, &self.tools.mpv, start, true)
-        {
+        match self.player.play_stream_at(&track, url, start, true) {
             Ok(()) => {
                 self.current = Some(track);
                 self.jam_sync.armed_start = snapshot.playing.then_some(start);
@@ -645,6 +642,11 @@ mod tests {
     fn app(mpv: &Path) -> YtMusicApp {
         let mut app = YtMusicApp::default();
         app.tools.mpv = mpv.to_path_buf();
+        app.player
+            .set_output(Box::new(crate::infrastructure::mpv::MpvOutput::new(
+                mpv.to_path_buf(),
+                app.registry.clone(),
+            )));
         // Resolution is replaced below; make sure nothing reaches the network.
         app.tools.yt_dlp = PathBuf::from("missing-yt-dlp-for-tests");
         app.player.volume = 0;
@@ -693,7 +695,7 @@ mod tests {
         let first = track("first");
         host.current = Some(first.clone());
         host.player
-            .play_stream_at(&first, TONE, &mpv, 40.0, false)
+            .play_stream_at(&first, TONE, 40.0, false)
             .unwrap();
         let address = host.jam.host_on_loopback();
         let mut guest = app(&mpv);
@@ -765,7 +767,7 @@ mod tests {
         host.current = Some(second.clone());
         assert!(host.should_hold_for_guests());
         host.player
-            .play_stream_at(&second, TONE, &mpv, 0.0, true)
+            .play_stream_at(&second, TONE, 0.0, true)
             .unwrap();
         host.jam_hold = Some(Instant::now());
         let waiting = Instant::now();

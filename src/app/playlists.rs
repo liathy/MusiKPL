@@ -242,6 +242,11 @@ mod tests {
         let mut app = YtMusicApp::default();
         app.tools.yt_dlp = "missing-yt-dlp-for-tests".into();
         app.tools.mpv = "missing-mpv-for-tests".into();
+        app.player
+            .set_output(Box::new(crate::infrastructure::mpv::MpvOutput::new(
+                app.tools.mpv.clone(),
+                app.registry.clone(),
+            )));
         app
     }
 

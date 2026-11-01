@@ -239,7 +239,9 @@ impl YtMusicApp {
             return;
         }
         if self.friends.service.is_none() {
-            self.friends.service = Some(Friends::start(&ids, &self.friend_name(), ctx.clone()));
+            let ctx = ctx.clone();
+            let wake: crate::friends::Waker = std::sync::Arc::new(move || ctx.request_repaint());
+            self.friends.service = Some(Friends::start(&ids, &self.friend_name(), wake));
         }
         let events = self
             .friends

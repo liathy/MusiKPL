@@ -1,5 +1,5 @@
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -7,6 +7,8 @@ use std::{
     },
     time::Instant,
 };
+
+use musikpl_core::audio::{AudioOutput, PositionSample};
 
 use crate::infrastructure::process::{hide_console, ProcessRegistry};
 
@@ -22,13 +24,6 @@ pub(crate) struct MpvBackend {
     ipc_path: Option<String>,
     registry: ProcessRegistry,
     probe: Option<PositionProbe>,
-}
-
-/// MPV's own playback position at a known instant.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct PositionSample {
-    pub(crate) position: f64,
-    pub(crate) taken: Instant,
 }
 
 /// Background reader of MPV's `time-pos`, so position never has to be
@@ -139,6 +134,67 @@ impl MpvBackend {
             .as_mut()
             .map(|child| child.try_wait().ok().flatten().is_some())
             .unwrap_or(false)
+    }
+}
+
+/// mpv as the core's [`AudioOutput`]: one mpv process per stream, steered
+/// over its IPC pipe.
+pub(crate) struct MpvOutput {
+    backend: MpvBackend,
+    mpv: PathBuf,
+}
+
+impl MpvOutput {
+    pub(crate) fn new(mpv: PathBuf, registry: ProcessRegistry) -> Self {
+        let mut backend = MpvBackend::default();
+        backend.set_registry(registry);
+        Self { backend, mpv }
+    }
+}
+
+impl AudioOutput for MpvOutput {
+    fn play(&mut self, url: &str, volume: u8, start_secs: f64, paused: bool) -> Result<(), String> {
+        self.backend
+            .play_stream(url, &self.mpv, volume, start_secs, paused)
+    }
+
+    fn set_paused(&mut self, paused: bool) {
+        self.backend.send(if paused {
+            "[\"set_property\",\"pause\",true]"
+        } else {
+            "[\"set_property\",\"pause\",false]"
+        });
+    }
+
+    fn seek(&mut self, position: f64) {
+        self.backend
+            .send(&format!("[\"set_property\",\"time-pos\",{position}]"));
+    }
+
+    fn set_speed(&mut self, speed: f64) {
+        self.backend
+            .send(&format!("[\"set_property\",\"speed\",{speed:.3}]"));
+    }
+
+    fn set_volume(&mut self, volume: u8) {
+        self.backend
+            .send(&format!("[\"set_property\",\"volume\",{volume}]"));
+    }
+
+    fn stop(&mut self) {
+        self.backend.stop();
+    }
+
+    fn latest_position(&self) -> Option<PositionSample> {
+        self.backend.latest_position()
+    }
+
+    fn reports_position(&self) -> bool {
+        self.backend.reports_position()
+    }
+
+    fn is_finished(&mut self) -> bool {
+        self.backend.is_finished()
     }
 }
 

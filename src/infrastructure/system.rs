@@ -2,84 +2,9 @@
 //! link in the default browser, starting with Windows, the computer's
 //! network adapters, and the Windows Firewall rule LAN Jams need.
 
-use std::{net::Ipv4Addr, process::Command};
+use std::process::Command;
 
 use super::process::hide_console;
-
-/// The IPv4 address and prefix length of every active network adapter,
-/// loopback excluded. Used to send Jam discovery out of each one: a PC with
-/// a VPN or virtual adapter would otherwise only reach one network.
-#[cfg(windows)]
-pub(crate) fn ipv4_networks() -> Vec<(Ipv4Addr, u8)> {
-    use windows_sys::Win32::{
-        NetworkManagement::{
-            IpHelper::{
-                GetAdaptersAddresses, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER,
-                GAA_FLAG_SKIP_FRIENDLY_NAME, GAA_FLAG_SKIP_MULTICAST, IF_TYPE_SOFTWARE_LOOPBACK,
-                IP_ADAPTER_ADDRESSES_LH,
-            },
-            Ndis::IfOperStatusUp,
-        },
-        Networking::WinSock::{AF_INET, SOCKADDR_IN},
-    };
-    const ERROR_BUFFER_OVERFLOW: u32 = 111;
-
-    let flags = GAA_FLAG_SKIP_ANYCAST
-        | GAA_FLAG_SKIP_MULTICAST
-        | GAA_FLAG_SKIP_DNS_SERVER
-        | GAA_FLAG_SKIP_FRIENDLY_NAME;
-    // u64 elements keep the buffer aligned for the structures written to it.
-    let mut size: u32 = 16 * 1024;
-    let mut buffer: Vec<u64> = Vec::new();
-    for _ in 0..3 {
-        buffer.resize((size as usize).div_ceil(8), 0);
-        // SAFETY: the buffer holds `size` writable bytes, as the call requires.
-        let status = unsafe {
-            GetAdaptersAddresses(
-                u32::from(AF_INET),
-                flags,
-                std::ptr::null(),
-                buffer.as_mut_ptr().cast(),
-                &mut size,
-            )
-        };
-        match status {
-            0 => break,
-            ERROR_BUFFER_OVERFLOW => continue,
-            _ => return Vec::new(),
-        }
-    }
-
-    let mut networks = Vec::new();
-    let mut adapter = buffer.as_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
-    // SAFETY: on success the buffer holds a linked list of adapters whose
-    // pointers stay valid while `buffer` lives; each is checked for null.
-    unsafe {
-        while !adapter.is_null() {
-            let current = &*adapter;
-            if current.OperStatus == IfOperStatusUp && current.IfType != IF_TYPE_SOFTWARE_LOOPBACK {
-                let mut unicast = current.FirstUnicastAddress;
-                while !unicast.is_null() {
-                    let entry = &*unicast;
-                    let sockaddr = entry.Address.lpSockaddr;
-                    if !sockaddr.is_null() && (*sockaddr).sa_family == AF_INET {
-                        let address = &*sockaddr.cast::<SOCKADDR_IN>();
-                        let ip = Ipv4Addr::from(u32::from_be(address.sin_addr.S_un.S_addr));
-                        networks.push((ip, entry.OnLinkPrefixLength));
-                    }
-                    unicast = entry.Next;
-                }
-            }
-            adapter = current.Next;
-        }
-    }
-    networks
-}
-
-#[cfg(not(windows))]
-pub(crate) fn ipv4_networks() -> Vec<(Ipv4Addr, u8)> {
-    Vec::new()
-}
 
 /// Allow this MusiKPL.exe through Windows Firewall for incoming connections
 /// on every network type (Private and Public), which LAN Jams need on both

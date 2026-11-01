@@ -198,6 +198,14 @@ cargo test --workspace
 
 The setup lives in `installer/` (a workspace member). It embeds `target/release/MusiKPL.exe`, so build MusiKPL first.
 
+### Project layout
+
+| Folder | What's in it |
+|---|---|
+| `core/` | `musikpl-core`: everything that isn't drawing or the operating system (recommendations, playlists, Last.fm, Jams, friends, the player's state). Shared with the Android app. Platforms plug in through `AudioOutput` (mpv, ExoPlayer) and `Extractor` (yt-dlp, NewPipe). |
+| `src/` | The desktop app: the egui interface, mpv and yt-dlp, Windows and Linux integration. |
+| `installer/` | The Windows setup. |
+
 ## 🎧 Jam
 
 Listen together in sync, on your home network or over the internet. Everyone streams the audio themselves; the Jam only keeps playback in sync.
@@ -252,7 +260,7 @@ Users are responsible for complying with applicable laws, platform terms, and th
 
 ## 📄 License
 
-See the repository's [LICENSE](LICENSE) file for licensing information. Baloo Thambi and Baloo Thambi 2 are by Ek Type, under the SIL Open Font License (`src/assets/fonts/LICENSE.txt`).
+MusiKPL is free software, released under the [GNU General Public License v3.0 or later](LICENSE): you may use, study, share and change it, and anything built from it must stay under the same license. Baloo Thambi and Baloo Thambi 2 are by Ek Type, under the SIL Open Font License (`src/assets/fonts/LICENSE.txt`).
 
 ---
 
