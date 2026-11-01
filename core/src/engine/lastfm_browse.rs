@@ -13,20 +13,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     domain::{youtube_thumbnail, Cover, Track},
-    infrastructure::storage,
     lastfm::{
         browse::{ArtistHit, ArtistPage, Period, Profile},
         lookup_key, BrowseRequest, LastFmEvent,
     },
-    media::query_ytdlp_limited,
+    platform,
     recommendations::home::Followed,
-    ui::{
-        artist::{ArtistAction, SongPick},
-        profile::ProfileAction,
-    },
+    storage,
 };
 
-use super::{errors::AppError, View, YtMusicApp};
+use super::{errors::AppError, Engine, View};
 
 const BOOKMARKS_FILE: &str = "artists.json";
 const IMAGES_FILE: &str = "artist_images.json";
@@ -36,58 +32,58 @@ const PROFILE_FRESH: Duration = Duration::from_secs(5 * 60);
 /// An artist the user bookmarked: shown in the menu, and used for Home and
 /// Auto Mix. Similar artists are kept for "Similar to …" rows.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub(crate) struct Bookmark {
-    pub(crate) name: String,
+pub struct Bookmark {
+    pub name: String,
     #[serde(default)]
-    pub(crate) similar: Vec<String>,
+    pub similar: Vec<String>,
 }
 
 /// What to do with a Last.fm song once it's found on YouTube.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SongIntent {
+pub enum SongIntent {
     Play,
     AddToMix,
     Like,
-    AddToPlaylist(crate::ui::menu::PlaylistTarget),
+    AddToPlaylist(crate::domain::PlaylistTarget),
 }
 
 /// Pictures for one frame: the user's avatar and artists' photos.
 #[derive(Default)]
-pub(super) struct Photos {
+pub struct Photos {
     /// The open profile's picture.
-    pub(super) avatar: Option<Cover>,
+    pub avatar: Option<Cover>,
     /// The user's own picture, for the menu.
-    pub(super) my_avatar: Option<Cover>,
-    pub(super) search: Vec<Option<Cover>>,
-    pub(super) artist: Option<Cover>,
-    pub(super) similar: Vec<Option<Cover>>,
-    pub(super) top_artists: Vec<Option<Cover>>,
-    pub(super) bookmarks: Vec<Option<Cover>>,
+    pub my_avatar: Option<Cover>,
+    pub search: Vec<Option<Cover>>,
+    pub artist: Option<Cover>,
+    pub similar: Vec<Option<Cover>>,
+    pub top_artists: Vec<Option<Cover>>,
+    pub bookmarks: Vec<Option<Cover>>,
 }
 
 #[derive(Default)]
-pub(super) struct Browse {
+pub struct Browse {
     /// Artists for the current search, and the query they're for.
-    pub(super) artists: Vec<ArtistHit>,
+    pub artists: Vec<ArtistHit>,
     artists_query: String,
     /// The artist page open (or last opened), and its result once loaded.
-    pub(super) artist_name: String,
-    pub(super) artist: Option<Result<ArtistPage, String>>,
-    pub(super) profile: Option<Result<Profile, String>>,
+    pub artist_name: String,
+    pub artist: Option<Result<ArtistPage, String>>,
+    pub profile: Option<Result<Profile, String>>,
     /// Whose profile profile is (the user's own, or a friend's).
-    pub(super) profile_user: String,
+    pub profile_user: String,
     /// The user's own avatar and scrobbles, for the menu: kept apart so
     /// opening someone else's profile doesn't replace them.
-    pub(super) my_avatar: Option<String>,
-    pub(super) my_scrobbles: Option<u64>,
+    pub my_avatar: Option<String>,
+    pub my_scrobbles: Option<u64>,
     /// Songs Last.fm found for the search, shown when YouTube finds none.
-    pub(super) tracks: Vec<crate::lastfm::browse::TrackHit>,
+    pub tracks: Vec<crate::lastfm::browse::TrackHit>,
     /// Last.fm users found by the search (an exact username match).
-    pub(super) people: Vec<Profile>,
+    pub people: Vec<Profile>,
     profile_at: Option<Instant>,
-    pub(super) profile_loading: bool,
-    pub(super) period: Period,
-    pub(super) bookmarks: Vec<Bookmark>,
+    pub profile_loading: bool,
+    pub period: Period,
+    pub bookmarks: Vec<Bookmark>,
     /// Artist name (lower-case) to the YouTube video whose cover is its
     /// photo; `None` when none was found.
     images: HashMap<String, Option<String>>,
@@ -100,23 +96,23 @@ pub(super) struct Browse {
 }
 
 impl Browse {
-    pub(super) fn busy(&self) -> bool {
+    pub fn busy(&self) -> bool {
         self.image_rx.is_some() || self.song_rx.is_some() || self.profile_loading
     }
 
-    pub(super) fn is_bookmarked(&self, name: &str) -> bool {
+    pub fn is_bookmarked(&self, name: &str) -> bool {
         self.bookmarks
             .iter()
             .any(|bookmark| bookmark.name.eq_ignore_ascii_case(name))
     }
 
-    pub(super) fn finding_song(&self) -> bool {
+    pub fn finding_song(&self) -> bool {
         self.song_rx.is_some()
     }
 }
 
-impl YtMusicApp {
-    pub(super) fn load_browse(&mut self) {
+impl Engine {
+    pub fn load_browse(&mut self) {
         self.browse.bookmarks = storage::read(BOOKMARKS_FILE).unwrap_or_default();
         self.browse.images = storage::read(IMAGES_FILE).unwrap_or_default();
     }
@@ -126,7 +122,7 @@ impl YtMusicApp {
     }
 
     /// With a song search, look for artists of that name too.
-    pub(super) fn search_artists(&mut self, query: &str) {
+    pub fn search_artists(&mut self, query: &str) {
         self.browse.artists.clear();
         self.browse.tracks.clear();
         self.browse.people.clear();
@@ -150,7 +146,7 @@ impl YtMusicApp {
 
     /// Fetch friends' Last.fm pictures, once a run each, so the Friends
     /// card shows them (a saved one shows meanwhile).
-    pub(super) fn request_friend_avatars(&mut self) {
+    pub fn request_friend_avatars(&mut self) {
         let Some(api_key) = self.lookup_key() else {
             return;
         };
@@ -172,7 +168,7 @@ impl YtMusicApp {
 
     /// Open someone's Last.fm profile (a friend's, or a person found by
     /// search).
-    pub(super) fn open_user_profile(&mut self, user: &str) {
+    pub fn open_user_profile(&mut self, user: &str) {
         self.view = View::Profile;
         if !self.browse.profile_user.eq_ignore_ascii_case(user) {
             self.browse.profile_user = user.to_owned();
@@ -189,7 +185,7 @@ impl YtMusicApp {
     }
 
     /// Whether the profile shown is the user's own.
-    pub(super) fn profile_is_mine(&self) -> bool {
+    pub fn profile_is_mine(&self) -> bool {
         !self.settings.lastfm.username.is_empty()
             && self
                 .browse
@@ -197,7 +193,7 @@ impl YtMusicApp {
                 .eq_ignore_ascii_case(&self.settings.lastfm.username)
     }
 
-    pub(super) fn open_artist(&mut self, name: &str) {
+    pub fn open_artist(&mut self, name: &str) {
         self.view = View::Artist;
         if self.browse.artist_name.eq_ignore_ascii_case(name) && self.browse.artist.is_some() {
             return;
@@ -220,7 +216,7 @@ impl YtMusicApp {
     /// Open the Last.fm page of a YouTube song's artist (the player bar's
     /// artist name). The most listened Last.fm artist named like it is
     /// picked, since Last.fm has many with similar names.
-    pub(super) fn open_track_artist(&mut self, track: &Track) {
+    pub fn open_track_artist(&mut self, track: &Track) {
         let names = crate::domain::artist_candidates(track);
         let Some(first) = names.first().cloned() else {
             return;
@@ -247,7 +243,7 @@ impl YtMusicApp {
         }
     }
 
-    pub(super) fn toggle_bookmark(&mut self) {
+    pub fn toggle_bookmark(&mut self) {
         let name = self.browse.artist_name.clone();
         if self.browse.is_bookmarked(&name) {
             self.browse
@@ -264,14 +260,14 @@ impl YtMusicApp {
     }
 
     /// Open the connected user's profile, fetching it when it's old.
-    pub(super) fn open_profile(&mut self) {
+    pub fn open_profile(&mut self) {
         let me = self.settings.lastfm.username.clone();
         self.open_user_profile(&me);
     }
 
     /// Load the profile in the background (at startup, after connecting),
     /// so the menu card can show it.
-    pub(super) fn prefetch_profile(&mut self) {
+    pub fn prefetch_profile(&mut self) {
         if self.lastfm_connected() {
             self.browse
                 .profile_user
@@ -280,7 +276,7 @@ impl YtMusicApp {
         }
     }
 
-    pub(super) fn set_profile_period(&mut self, period: Period) {
+    pub fn set_profile_period(&mut self, period: Period) {
         if self.browse.period != period {
             self.browse.period = period;
             self.request_profile();
@@ -307,7 +303,7 @@ impl YtMusicApp {
 
     /// Handle a browse result from Last.fm. Returns the event back when it
     /// isn't one.
-    pub(super) fn receive_browse(&mut self, event: LastFmEvent) -> Option<LastFmEvent> {
+    pub fn receive_browse(&mut self, event: LastFmEvent) -> Option<LastFmEvent> {
         match event {
             LastFmEvent::Artists { query, result } => {
                 // A newer search may have replaced this one.
@@ -393,7 +389,7 @@ impl YtMusicApp {
 
     /// The artist's photo: the cover of their top YouTube result, looked up
     /// once in the background and remembered.
-    pub(super) fn artist_image(&mut self, name: &str) -> Option<Cover> {
+    pub fn artist_image(&mut self, name: &str) -> Option<Cover> {
         let key = name.to_lowercase();
         match self.browse.images.get(&key) {
             Some(Some(video)) => youtube_thumbnail(video),
@@ -409,7 +405,7 @@ impl YtMusicApp {
 
     /// Called every frame: one artist photo lookup at a time, and songs
     /// being found on YouTube.
-    pub(super) fn tick_browse(&mut self) {
+    pub fn tick_browse(&mut self) {
         if let Some(rx) = &self.browse.image_rx {
             match rx.try_recv() {
                 Ok((name, video)) => {
@@ -423,19 +419,14 @@ impl YtMusicApp {
         }
         if self.browse.image_rx.is_none() {
             if let Some(name) = self.browse.image_queue.pop_front() {
-                let (tools, registry) = (self.tools.clone(), self.registry.clone());
+                let extractor = self.extractor.clone();
                 let (sender, receiver) = mpsc::channel();
                 std::thread::spawn(move || {
-                    let video = query_ytdlp_limited(
-                        &tools,
-                        &format!("ytsearch1:{name} music"),
-                        true,
-                        Some(1),
-                        &registry,
-                    )
-                    .ok()
-                    .and_then(|tracks| tracks.into_iter().next())
-                    .map(|track| track.id);
+                    let video = extractor
+                        .list(&format!("ytsearch1:{name} music"), Some(1))
+                        .ok()
+                        .and_then(|tracks| tracks.into_iter().next())
+                        .map(|track| track.id);
                     let _ = sender.send((name, video));
                 });
                 self.browse.image_rx = Some(receiver);
@@ -469,7 +460,7 @@ impl YtMusicApp {
     }
 
     /// Bookmarked artists, for Home's recommendations.
-    pub(super) fn followed_artists(&self) -> Vec<Followed> {
+    pub fn followed_artists(&self) -> Vec<Followed> {
         self.browse
             .bookmarks
             .iter()
@@ -482,7 +473,7 @@ impl YtMusicApp {
 
     /// Photos for what is about to be drawn; missing ones are queued for
     /// lookup.
-    pub(super) fn gather_photos(&mut self) -> Photos {
+    pub fn gather_photos(&mut self) -> Photos {
         let mut photos = Photos {
             avatar: match &self.browse.profile {
                 Some(Ok(profile)) => profile.image.clone().map(|url| Cover {
@@ -531,7 +522,7 @@ impl YtMusicApp {
             }
             _ => {}
         }
-        if self.menu_open {
+        if self.menu_visible {
             let bookmarks: Vec<String> = self
                 .browse
                 .bookmarks
@@ -548,75 +539,26 @@ impl YtMusicApp {
         photos
     }
 
-    /// Open Settings at the Last.fm page, where the account is connected.
-    pub(super) fn connect_lastfm_from_ui(&mut self) {
-        self.settings_page = crate::ui::overlays::SettingsPage::LastFm;
-        self.settings_error = None;
-        self.settings_open = true;
-    }
-
-    pub(super) fn apply_artist_action(&mut self, action: ArtistAction) {
-        let artist = match &self.browse.artist {
-            Some(Ok(page)) => page.name.clone(),
-            _ => self.browse.artist_name.clone(),
-        };
-        match action {
-            ArtistAction::ToggleBookmark => self.toggle_bookmark(),
-            ArtistAction::Play(title) => self.find_and_play(&artist, &title, SongIntent::Play),
-            ArtistAction::Add(title, pick) => {
-                let intent = match pick {
-                    SongPick::Like => SongIntent::Like,
-                    SongPick::Mix => SongIntent::AddToMix,
-                    SongPick::Playlist(target) => SongIntent::AddToPlaylist(target),
-                };
-                self.find_and_play(&artist, &title, intent)
-            }
-            ArtistAction::OpenArtist(name) => self.open_artist(&name),
-            ArtistAction::OpenUrl(url) => self.open_link(&url),
-        }
-    }
-
-    pub(super) fn apply_profile_action(&mut self, action: ProfileAction) {
-        match action {
-            ProfileAction::Period(period) => self.set_profile_period(period),
-            ProfileAction::OpenArtist(name) => self.open_artist(&name),
-            ProfileAction::Play { artist, title } => {
-                self.find_and_play(&artist, &title, SongIntent::Play)
-            }
-            ProfileAction::OpenUrl(url) => self.open_link(&url),
-            ProfileAction::Connect => self.connect_lastfm_from_ui(),
-            ProfileAction::AddFriend => {
-                let user = self.browse.profile_user.clone();
-                self.add_lastfm_friend(&user);
-            }
-            ProfileAction::RemoveFriend => {
-                let user = self.browse.profile_user.clone();
-                self.remove_lastfm_friend(&user);
-            }
-            ProfileAction::CopyFriendCode => self.clipboard = Some(self.my_friend_code()),
-        }
-    }
-
-    fn open_link(&mut self, url: &str) {
-        if let Err(error) = crate::infrastructure::system::open_url(url) {
+    /// Open a web page; a failure shows as an error.
+    pub fn open_link(&mut self, url: &str) {
+        if let Err(error) = platform::open_url(url) {
             self.error = Some(AppError::Ui(error));
         }
     }
 
     /// Play (or add) a song known by its artist and title, by finding it on
     /// YouTube first.
-    pub(super) fn find_and_play(&mut self, artist: &str, title: &str, intent: SongIntent) {
+    pub fn find_and_play(&mut self, artist: &str, title: &str, intent: SongIntent) {
         let query = format!("ytsearch1:{artist} - {title}");
-        let (tools, registry) = (self.tools.clone(), self.registry.clone());
+        let extractor = self.extractor.clone();
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
-            let found =
-                query_ytdlp_limited(&tools, &query, true, Some(1), &registry).and_then(|tracks| {
-                    tracks
-                        .into_iter()
-                        .next()
-                        .ok_or_else(|| "That song wasn't found on YouTube".to_string())
-                });
+            let found = extractor.list(&query, Some(1)).and_then(|tracks| {
+                tracks
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| "That song wasn't found on YouTube".to_string())
+            });
             let _ = sender.send(found);
         });
         self.browse.song_rx = Some((receiver, intent));
@@ -629,7 +571,7 @@ mod tests {
 
     #[test]
     fn bookmarks_toggle_and_keep_similar_artists() {
-        let mut app = YtMusicApp::default();
+        let mut app = Engine::default();
         app.browse.artist_name = "Queen".into();
         app.browse.artist = Some(Ok(ArtistPage {
             name: "Queen".into(),
@@ -650,7 +592,7 @@ mod tests {
 
     #[test]
     fn old_artist_searches_dont_replace_newer_ones() {
-        let mut app = YtMusicApp::default();
+        let mut app = Engine::default();
         app.browse.artists_query = "new".into();
         let stale = LastFmEvent::Artists {
             query: "old".into(),
@@ -665,7 +607,7 @@ mod tests {
 
     #[test]
     fn artist_photos_are_looked_up_once() {
-        let mut app = YtMusicApp::default();
+        let mut app = Engine::default();
         assert!(app.artist_image("Queen").is_none());
         assert!(app.artist_image("queen").is_none());
         assert_eq!(app.browse.image_queue.len(), 1);

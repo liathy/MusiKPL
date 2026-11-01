@@ -162,12 +162,7 @@ pub(crate) fn section_card(
     result
 }
 
-/// Where to add a song: an existing playlist, or a new one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PlaylistTarget {
-    Existing(u64),
-    New,
-}
+pub(crate) use musikpl_core::domain::PlaylistTarget;
 
 /// The "Add to playlist" list, for right-click menus and the player bar.
 /// Playlists that already have the song show a check and can't be picked.

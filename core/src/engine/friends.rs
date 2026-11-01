@@ -6,17 +6,15 @@ use std::{
     time::{Duration, Instant},
 };
 
-use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     friends::{my_code, FriendCode, FriendEvent, Friends},
-    infrastructure::storage,
     jam::{Progress, Role},
-    ui::menu::{FriendAction, FriendItem, FriendStatus, FriendsView},
+    storage,
 };
 
-use super::YtMusicApp;
+use super::Engine;
 
 const FRIENDS_FILE: &str = "friends.json";
 /// How often presence is checked: often while the menu (and its Friends
@@ -27,46 +25,46 @@ const CHECK_CLOSED: Duration = Duration::from_secs(5 * 60);
 const NOTICE_TIME: Duration = Duration::from_secs(8);
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub(crate) struct Friend {
-    pub(crate) name: String,
+pub struct Friend {
+    pub name: String,
     /// Their Last.fm username, for their profile.
     #[serde(default)]
-    pub(crate) lastfm: Option<String>,
+    pub lastfm: Option<String>,
     /// Their friend code's key; without it they can't be seen online.
     #[serde(default)]
-    pub(crate) id: Option<String>,
+    pub id: Option<String>,
     /// Their Last.fm picture, remembered between runs.
     #[serde(default)]
-    pub(crate) avatar: Option<String>,
+    pub avatar: Option<String>,
 }
 
 /// A Jam invite from a friend, waiting for Join or Not now.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ReceivedInvite {
-    pub(crate) id: String,
-    pub(crate) name: String,
-    pub(crate) invite: String,
+pub struct ReceivedInvite {
+    pub id: String,
+    pub name: String,
+    pub invite: String,
 }
 
 #[derive(Default)]
-pub(super) struct FriendsState {
-    pub(super) list: Vec<Friend>,
+pub struct FriendsState {
+    pub list: Vec<Friend>,
     service: Option<Friends>,
-    pub(super) online: HashMap<String, bool>,
+    pub online: HashMap<String, bool>,
     last_check: Option<Instant>,
-    pub(super) invites: Vec<ReceivedInvite>,
+    pub invites: Vec<ReceivedInvite>,
     /// Friends to invite once this Jam's internet invite is ready.
     pending: Vec<String>,
     /// The friend code being pasted in the Friends card.
-    pub(super) code_input: String,
-    pub(super) adding: bool,
+    pub code_input: String,
+    pub adding: bool,
     notice: Option<(String, Instant)>,
     /// Last.fm users whose picture was asked for this run.
-    pub(super) avatars_asked: std::collections::HashSet<String>,
+    pub avatars_asked: std::collections::HashSet<String>,
 }
 
 impl FriendsState {
-    pub(super) fn notice(&self) -> Option<&str> {
+    pub fn notice(&self) -> Option<&str> {
         self.notice
             .as_ref()
             .filter(|(_, at)| at.elapsed() < NOTICE_TIME)
@@ -80,7 +78,7 @@ impl FriendsState {
             .collect()
     }
 
-    pub(super) fn is_friend(&self, lastfm: &str) -> bool {
+    pub fn is_friend(&self, lastfm: &str) -> bool {
         self.list.iter().any(|friend| {
             friend
                 .lastfm
@@ -90,13 +88,13 @@ impl FriendsState {
     }
 }
 
-impl YtMusicApp {
-    pub(super) fn load_friends(&mut self) {
+impl Engine {
+    pub fn load_friends(&mut self) {
         self.friends.list = storage::read(FRIENDS_FILE).unwrap_or_default();
     }
 
     /// A friend's Last.fm picture arrived: keep it if it changed.
-    pub(super) fn set_friend_avatar(&mut self, user: &str, image: Option<String>) {
+    pub fn set_friend_avatar(&mut self, user: &str, image: Option<String>) {
         let mut changed = false;
         for friend in &mut self.friends.list {
             let theirs = friend
@@ -126,7 +124,7 @@ impl YtMusicApp {
     }
 
     /// The name friends see: the Last.fm username, else the PC's user name.
-    pub(super) fn friend_name(&self) -> String {
+    pub fn friend_name(&self) -> String {
         let lastfm = &self.settings.lastfm.username;
         if !lastfm.is_empty() {
             return lastfm.clone();
@@ -136,16 +134,16 @@ impl YtMusicApp {
             .unwrap_or_else(|_| "MusiKPL user".into())
     }
 
-    pub(super) fn my_friend_code(&self) -> String {
+    pub fn my_friend_code(&self) -> String {
         my_code(&self.friend_name()).encode()
     }
 
-    fn set_friend_notice(&mut self, text: impl Into<String>) {
+    pub fn set_friend_notice(&mut self, text: impl Into<String>) {
         self.friends.notice = Some((text.into(), Instant::now()));
     }
 
     /// Add a Last.fm user as a friend (from their profile).
-    pub(super) fn add_lastfm_friend(&mut self, username: &str) {
+    pub fn add_lastfm_friend(&mut self, username: &str) {
         if self.friends.is_friend(username) {
             return;
         }
@@ -161,7 +159,7 @@ impl YtMusicApp {
         ));
     }
 
-    pub(super) fn remove_lastfm_friend(&mut self, username: &str) {
+    pub fn remove_lastfm_friend(&mut self, username: &str) {
         self.friends.list.retain(|friend| {
             !friend
                 .lastfm
@@ -171,7 +169,7 @@ impl YtMusicApp {
         self.save_friends();
     }
 
-    pub(super) fn remove_friend(&mut self, index: usize) {
+    pub fn remove_friend(&mut self, index: usize) {
         if index < self.friends.list.len() {
             self.friends.list.remove(index);
             self.save_friends();
@@ -180,7 +178,7 @@ impl YtMusicApp {
 
     /// Add the friend code pasted in the Friends card. It completes a
     /// friend added from Last.fm with the same name, or adds a new one.
-    pub(super) fn add_friend_code(&mut self) {
+    pub fn add_friend_code(&mut self) {
         let code = match FriendCode::decode(&self.friends.code_input) {
             Ok(code) => code,
             Err(error) => {
@@ -232,16 +230,18 @@ impl YtMusicApp {
 
     /// Called every frame: run the service when there are friends to reach,
     /// check presence now and then, and handle invites.
-    pub(super) fn tick_friends(&mut self, ctx: &egui::Context) {
+    pub fn tick_friends(&mut self) {
         self.request_friend_avatars();
         let ids = self.friends.ids();
         if ids.is_empty() {
             return;
         }
         if self.friends.service.is_none() {
-            let ctx = ctx.clone();
-            let wake: crate::friends::Waker = std::sync::Arc::new(move || ctx.request_repaint());
-            self.friends.service = Some(Friends::start(&ids, &self.friend_name(), wake));
+            self.friends.service = Some(Friends::start(
+                &ids,
+                &self.friend_name(),
+                self.waker.clone(),
+            ));
         }
         let events = self
             .friends
@@ -283,7 +283,7 @@ impl YtMusicApp {
             }
         }
 
-        let interval = if self.menu_open {
+        let interval = if self.menu_visible {
             CHECK_OPEN
         } else {
             CHECK_CLOSED
@@ -304,7 +304,7 @@ impl YtMusicApp {
     }
 
     /// Check presence right away (the menu was opened).
-    pub(super) fn refresh_friends(&mut self) {
+    pub fn refresh_friends(&mut self) {
         let stale = self
             .friends
             .last_check
@@ -324,7 +324,7 @@ impl YtMusicApp {
 
     /// Invite a friend to the Jam this device hosts; the Jam is shared over
     /// the internet first if it isn't yet.
-    pub(super) fn invite_friend(&mut self, id: &str) {
+    pub fn invite_friend(&mut self, id: &str) {
         if self.jam.info.role != Some(Role::Host) {
             self.set_friend_notice("Start a Jam first (Menu → Jam), then invite friends.");
             return;
@@ -363,88 +363,16 @@ impl YtMusicApp {
         }
     }
 
-    /// What the Friends card shows.
-    pub(super) fn friends_view(&self) -> FriendsView<'_> {
-        let items =
-            self.friends
-                .list
-                .iter()
-                .map(|friend| {
-                    let status = match &friend.id {
-                        None => FriendStatus::NoCode,
-                        Some(id) => match self.friends.online.get(id) {
-                            Some(true) => FriendStatus::Online,
-                            Some(false) => FriendStatus::Offline,
-                            None => FriendStatus::Unknown,
-                        },
-                    };
-                    let invited_us = friend.id.as_ref().is_some_and(|id| {
-                        self.friends.invites.iter().any(|invite| &invite.id == id)
-                    });
-                    FriendItem {
-                        name: &friend.name,
-                        avatar: friend.avatar.clone().map(|url| crate::domain::Cover {
-                            url,
-                            uv: [0.0, 0.0, 1.0, 1.0],
-                        }),
-                        status,
-                        invited_us,
-                    }
-                })
-                .collect();
-        FriendsView {
-            items,
-            hosting: self.jam.info.role == Some(Role::Host),
-            quiet_invites: !self.settings.invite_popups,
-            adding: self.friends.adding,
-            notice: self.friends.notice(),
-        }
-    }
-
-    pub(super) fn apply_friend_action(&mut self, action: FriendAction) {
-        let friend = |index: usize| self.friends.list.get(index).cloned();
-        match action {
-            FriendAction::Open(index) => match friend(index) {
-                Some(Friend {
-                    lastfm: Some(user), ..
-                }) => self.open_user_profile(&user),
-                Some(friend) => self
-                    .set_friend_notice(format!("{} has no Last.fm profile linked.", friend.name)),
-                None => {}
-            },
-            FriendAction::Remove(index) => self.remove_friend(index),
-            FriendAction::Invite(index) => {
-                if let Some(id) = friend(index).and_then(|friend| friend.id) {
-                    self.invite_friend(&id);
-                }
-            }
-            FriendAction::Join(index) => {
-                if let Some(id) = friend(index).and_then(|friend| friend.id) {
-                    self.accept_invite(&id);
-                }
-            }
-            FriendAction::CopyCode => {
-                self.clipboard = Some(self.my_friend_code());
-                self.set_friend_notice("Your friend code is copied. Send it to a friend.");
-            }
-            FriendAction::StartAdding => self.friends.adding = true,
-            FriendAction::CancelAdding => {
-                self.friends.adding = false;
-                self.friends.code_input.clear();
-            }
-            FriendAction::AddCode => self.add_friend_code(),
-        }
-    }
-
-    /// Join the Jam a friend invited us to.
-    pub(super) fn accept_invite(&mut self, id: &str) {
+    /// Join the Jam a friend invited us to. True when joining started (the
+    /// shell then shows the Jam).
+    pub fn accept_invite(&mut self, id: &str) -> bool {
         let Some(index) = self
             .friends
             .invites
             .iter()
             .position(|invite| invite.id == id)
         else {
-            return;
+            return false;
         };
         let invite = self.friends.invites.remove(index);
         if self.jam.info.role.is_some() {
@@ -452,15 +380,17 @@ impl YtMusicApp {
         }
         match self.jam.join_invite(&invite.invite) {
             Ok(()) => {
-                self.menu_open = true;
-                self.menu_jam_open = true;
                 self.set_friend_notice(format!("Joining {}'s Jam…", invite.name));
+                true
             }
-            Err(error) => self.set_friend_notice(error),
+            Err(error) => {
+                self.set_friend_notice(error);
+                false
+            }
         }
     }
 
-    pub(super) fn decline_invite(&mut self, id: &str) {
+    pub fn decline_invite(&mut self, id: &str) {
         self.friends.invites.retain(|invite| invite.id != id);
     }
 }
@@ -480,7 +410,7 @@ mod tests {
 
     #[test]
     fn a_friend_code_completes_a_lastfm_friend_or_adds_one() {
-        let mut app = YtMusicApp::default();
+        let mut app = Engine::default();
         app.add_lastfm_friend("Ana");
         assert!(app.friends.is_friend("ana"));
         assert!(app.friends.list[0].id.is_none());
@@ -502,7 +432,7 @@ mod tests {
 
     #[test]
     fn inviting_needs_a_jam_and_invites_can_be_declined() {
-        let mut app = YtMusicApp::default();
+        let mut app = Engine::default();
         app.invite_friend("someone");
         assert!(app.friends.notice().unwrap().contains("Start a Jam"));
 

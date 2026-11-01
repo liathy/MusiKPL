@@ -1,20 +1,18 @@
-//! Back and forward between pages, like a browser: the top bar's ‹ ›
-//! buttons, the mouse's side buttons (back and forward), and Alt+← / Alt+→.
+//! Back and forward between pages, like a browser (the shell maps its own
+//! buttons and keys onto `go_back` and `go_forward`).
 //!
 //! Pages are recorded by watching which one is showing, so every way of
 //! opening one (menu, cards, search, links) is covered without each having
 //! to remember it.
 
-use eframe::egui;
-
-use super::{View, YtMusicApp};
+use super::{Engine, View};
 
 /// Pages kept in each direction.
 const LIMIT: usize = 50;
 
 /// One page and what it shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum Page {
+pub enum Page {
     Home,
     Search(String),
     Playlist(u64),
@@ -23,7 +21,7 @@ pub(super) enum Page {
 }
 
 #[derive(Default)]
-pub(super) struct Navigation {
+pub struct Navigation {
     back: Vec<Page>,
     forward: Vec<Page>,
     /// The page showing when last checked.
@@ -31,11 +29,11 @@ pub(super) struct Navigation {
 }
 
 impl Navigation {
-    pub(super) fn can_back(&self) -> bool {
+    pub fn can_back(&self) -> bool {
         !self.back.is_empty()
     }
 
-    pub(super) fn can_forward(&self) -> bool {
+    pub fn can_forward(&self) -> bool {
         !self.forward.is_empty()
     }
 
@@ -59,7 +57,7 @@ fn push(list: &mut Vec<Page>, page: Page) {
     }
 }
 
-impl YtMusicApp {
+impl Engine {
     fn current_page(&self) -> Page {
         match self.view {
             View::Home => Page::Home,
@@ -70,36 +68,21 @@ impl YtMusicApp {
         }
     }
 
-    /// Once a frame: record page changes, and follow the mouse's side
-    /// buttons and Alt+arrows.
-    pub(super) fn tick_history(&mut self, ctx: &egui::Context) {
+    /// Every tick: a page change puts the last page on the back list.
+    pub fn track_page(&mut self) {
         let page = self.current_page();
         self.nav.visit(page);
-        let (back, forward) = ctx.input(|input| {
-            let alt = input.modifiers.alt;
-            (
-                input.pointer.button_pressed(egui::PointerButton::Extra1)
-                    || (alt && input.key_pressed(egui::Key::ArrowLeft)),
-                input.pointer.button_pressed(egui::PointerButton::Extra2)
-                    || (alt && input.key_pressed(egui::Key::ArrowRight)),
-            )
-        });
-        if back {
-            self.go_back();
-        } else if forward {
-            self.go_forward();
-        }
     }
 
     /// The open artist page took Last.fm's name for the artist: it's the
     /// same page, not a new one.
-    pub(super) fn artist_renamed(&mut self) {
+    pub fn artist_renamed(&mut self) {
         if self.view == View::Artist && matches!(self.nav.current, Some(Page::Artist(_))) {
             self.nav.current = Some(self.current_page());
         }
     }
 
-    pub(super) fn go_back(&mut self) {
+    pub fn go_back(&mut self) {
         while let Some(page) = self.nav.back.pop() {
             let from = self.nav.current.take();
             if self.show_page(&page) {
@@ -114,7 +97,7 @@ impl YtMusicApp {
         }
     }
 
-    pub(super) fn go_forward(&mut self) {
+    pub fn go_forward(&mut self) {
         while let Some(page) = self.nav.forward.pop() {
             let from = self.nav.current.take();
             if self.show_page(&page) {

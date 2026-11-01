@@ -263,3 +263,17 @@ mod linux_autostart {
             .map_err(|e| format!("Couldn't turn on starting on login ({e})"))
     }
 }
+
+/// The desktop as the core's platform: links open in the default browser.
+struct Desktop;
+
+impl musikpl_core::platform::Platform for Desktop {
+    fn open_url(&self, url: &str) -> Result<(), String> {
+        open_url(url)
+    }
+}
+
+/// Register the desktop with the core (once, at start).
+pub(crate) fn install_platform() {
+    musikpl_core::platform::install(Box::new(Desktop));
+}

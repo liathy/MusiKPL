@@ -8,4 +8,4 @@ pub(crate) mod tray;
 pub(crate) mod updater;
 
 // Shared with Android: moved to the core.
-pub(crate) use musikpl_core::{cloudflare_dns, settings, storage};
+pub(crate) use musikpl_core::cloudflare_dns;

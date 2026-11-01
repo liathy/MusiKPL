@@ -141,6 +141,13 @@ impl Playlists {
     }
 }
 
+/// Where to add a song: an existing playlist, or a new one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlaylistTarget {
+    Existing(u64),
+    New,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

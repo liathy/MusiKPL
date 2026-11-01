@@ -9,7 +9,6 @@ use std::{
 
 use crate::{
     domain::Track,
-    media::query_ytdlp_limited,
     recommendations::{
         home::{finish_row, plan_more_rows, usable_songs, ROW_LEN},
         rng::Rng,
@@ -18,11 +17,11 @@ use crate::{
 
 use super::{
     library::{unix_now, HomeBuild},
-    YtMusicApp,
+    Engine,
 };
 
 #[derive(Default)]
-pub(super) struct HomePaging {
+pub struct HomePaging {
     /// Songs shown per row, by row title (one page unless asked for more).
     shown: HashMap<String, usize>,
     /// The row searching for more songs, and its results.
@@ -30,12 +29,12 @@ pub(super) struct HomePaging {
     /// More rows being built.
     more_rows: Option<Receiver<HomeBuild>>,
     /// No favorites left for more rows.
-    pub(super) no_more_rows: bool,
+    pub no_more_rows: bool,
 }
 
 impl HomePaging {
     /// How many of a row's songs to show.
-    pub(super) fn shown(&self, title: &str, available: usize) -> usize {
+    pub fn shown(&self, title: &str, available: usize) -> usize {
         self.shown
             .get(title)
             .copied()
@@ -43,26 +42,26 @@ impl HomePaging {
             .min(available)
     }
 
-    pub(super) fn loading_row(&self, title: &str) -> bool {
+    pub fn loading_row(&self, title: &str) -> bool {
         self.row_fetch
             .as_ref()
             .is_some_and(|(loading, _)| loading == title)
     }
 
-    pub(super) fn loading_rows(&self) -> bool {
+    pub fn loading_rows(&self) -> bool {
         self.more_rows.is_some()
     }
 
-    pub(super) fn busy(&self) -> bool {
+    pub fn busy(&self) -> bool {
         self.row_fetch.is_some() || self.more_rows.is_some()
     }
 }
 
-impl YtMusicApp {
+impl Engine {
     /// The user is nearing the end of a row: show its next page, and when
     /// less than a page is left in reserve, search for more in the
     /// background so the following page is ready too (infinite scrolling).
-    pub(super) fn more_in_row(&mut self, title: &str, available: usize) {
+    pub fn more_in_row(&mut self, title: &str, available: usize) {
         let shown = self.library.paging.shown(title, available);
         let shown = if shown < available {
             let next = (shown + ROW_LEN).min(available);
@@ -88,20 +87,17 @@ impl YtMusicApp {
             return;
         }
         let source = row.next.remove(0);
-        let tools = self.tools.clone();
-        let registry = self.registry.clone();
+        let extractor = self.extractor.clone();
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
-            let _ = sender.send(
-                query_ytdlp_limited(&tools, &source, true, Some(30), &registry).unwrap_or_default(),
-            );
+            let _ = sender.send(extractor.list(&source, Some(30)).unwrap_or_default());
         });
         self.library.paging.row_fetch = Some((title.to_owned(), receiver));
     }
 
     /// The user reached the bottom of Home: add rows for favorites that
     /// don't have one yet.
-    pub(super) fn more_rows(&mut self) {
+    pub fn more_rows(&mut self) {
         let paging = &self.library.paging;
         if paging.more_rows.is_some() || paging.no_more_rows || self.library.building_home() {
             return;
@@ -129,7 +125,7 @@ impl YtMusicApp {
     }
 
     /// Collect songs and rows that finished loading.
-    pub(super) fn poll_home_paging(&mut self) {
+    pub fn poll_home_paging(&mut self) {
         self.poll_row_fetch();
         self.poll_more_rows();
     }
@@ -227,8 +223,7 @@ mod tests {
 
     #[test]
     fn rows_page_through_their_songs_before_searching() {
-        let mut app = YtMusicApp::default();
-        app.tools.yt_dlp = "missing-yt-dlp-for-tests".into();
+        let mut app = Engine::default();
         let tracks: Vec<Track> = (0..30).map(|i| track(&format!("s{i}"))).collect();
         app.library.home.rows.push(HomeRow {
             title: "Row".into(),

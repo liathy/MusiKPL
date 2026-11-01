@@ -1,7 +1,7 @@
 use std::fmt;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum AppError {
+pub enum AppError {
     Search(String),
     Mix(String),
     Playback(String),

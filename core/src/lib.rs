@@ -8,7 +8,9 @@
 
 pub mod audio;
 pub mod cloudflare_dns;
+pub mod covers;
 pub mod domain;
+pub mod engine;
 pub mod extractor;
 pub mod friends;
 pub mod jam;

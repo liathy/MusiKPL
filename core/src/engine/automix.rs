@@ -13,13 +13,12 @@ use std::{
 
 use crate::{
     domain::Track,
-    media::query_ytdlp_limited,
     recommendations::{
         mix_sources, retry_delay, select_mix_items, Exclusions, MIX_BATCH, MIX_LOW_WATER,
     },
 };
 
-use super::{errors::AppError, library::unix_now, YtMusicApp};
+use super::{errors::AppError, library::unix_now, Engine};
 
 type MixResult = Result<Vec<Track>, String>;
 
@@ -28,26 +27,26 @@ type MixResult = Result<Vec<Track>, String>;
 const MIX_SOURCE_LIMIT: usize = 25;
 
 #[derive(Default)]
-pub(super) struct AutoMix {
+pub struct AutoMix {
     /// The refill being searched for, if any.
-    pub(super) rx: Option<Receiver<MixResult>>,
+    pub rx: Option<Receiver<MixResult>>,
     /// Queued songs that Auto Mix picked, as opposed to the user.
-    pub(super) picks: HashSet<String>,
+    pub picks: HashSet<String>,
     /// The queue ran dry: play the first song the mix delivers.
-    pub(super) waiting: bool,
+    pub waiting: bool,
     /// After a refill found nothing, don't try again before this.
-    pub(super) retry_at: Option<Instant>,
+    pub retry_at: Option<Instant>,
     /// Refills in a row that found nothing.
-    pub(super) failures: u32,
+    pub failures: u32,
 }
 
 impl AutoMix {
-    pub(super) fn busy(&self) -> bool {
+    pub fn busy(&self) -> bool {
         self.rx.is_some()
     }
 }
 
-impl YtMusicApp {
+impl Engine {
     /// Everything that must not be picked again: what plays, what is queued,
     /// and what was played.
     fn mix_exclusions(&self) -> Exclusions {
@@ -87,8 +86,7 @@ impl YtMusicApp {
         for bookmark in &self.browse.bookmarks {
             preferences.favor(&bookmark.name);
         }
-        let tools = self.tools.clone();
-        let registry = self.registry.clone();
+        let extractor = self.extractor.clone();
         let (sender, receiver) = mpsc::channel();
         self.automix.rx = Some(receiver);
         std::thread::spawn(move || {
@@ -98,16 +96,10 @@ impl YtMusicApp {
             let pending: Vec<_> = sources
                 .into_iter()
                 .map(|source| {
-                    let (tools, registry) = (tools.clone(), registry.clone());
+                    let extractor = extractor.clone();
                     let (sender, receiver) = mpsc::channel();
                     std::thread::spawn(move || {
-                        let _ = sender.send(query_ytdlp_limited(
-                            &tools,
-                            &source,
-                            true,
-                            Some(MIX_SOURCE_LIMIT),
-                            &registry,
-                        ));
+                        let _ = sender.send(extractor.list(&source, Some(MIX_SOURCE_LIMIT)));
                     });
                     receiver
                 })
@@ -136,7 +128,7 @@ impl YtMusicApp {
     }
 
     /// Called every frame: start a refill when the queue runs low.
-    pub(super) fn keep_mix_filled(&mut self) {
+    pub fn keep_mix_filled(&mut self) {
         if self.is_guest() || !self.auto_mix || self.automix.busy() {
             return;
         }
@@ -154,7 +146,7 @@ impl YtMusicApp {
 
     /// Queue a refill's songs, filtered again because the queue may have
     /// changed while yt-dlp searched. Returns how many were added.
-    pub(super) fn queue_mix_picks(&mut self, items: Vec<Track>) -> usize {
+    pub fn queue_mix_picks(&mut self, items: Vec<Track>) -> usize {
         let mut exclusions = self.mix_exclusions();
         let mut added = 0;
         for track in select_mix_items(items, &mut exclusions, MIX_BATCH) {
@@ -166,7 +158,7 @@ impl YtMusicApp {
         added
     }
 
-    pub(super) fn poll_mix(&mut self) {
+    pub fn poll_mix(&mut self) {
         let Some(receiver) = &self.automix.rx else {
             return;
         };
@@ -201,13 +193,13 @@ impl YtMusicApp {
 
     /// A new song was chosen from search: start a fresh mix around it, but
     /// keep the songs the user queued.
-    pub(super) fn reset_mix(&mut self) {
+    pub fn reset_mix(&mut self) {
         let picks = std::mem::take(&mut self.automix.picks);
         self.queue.retain(|track| !picks.contains(&track.id));
         self.automix = Default::default();
     }
 
-    pub(super) fn set_auto_mix(&mut self, enabled: bool) {
+    pub fn set_auto_mix(&mut self, enabled: bool) {
         self.auto_mix = enabled;
         self.settings.auto_mix = enabled;
         self.library.settings_changed = true;
@@ -225,7 +217,7 @@ impl YtMusicApp {
 
     /// A song the user chose to add: it plays right away when nothing is
     /// playing, otherwise it is queued ahead of Auto Mix's picks.
-    pub(super) fn add_to_queue(&mut self, track: Track) {
+    pub fn add_to_queue(&mut self, track: Track) {
         if self.current.is_none() && !self.loading && !self.automix.waiting {
             self.play_queue_track(track);
             return;

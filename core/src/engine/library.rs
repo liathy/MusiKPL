@@ -14,17 +14,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     domain::{song_info, Playlists, Track},
-    infrastructure::storage,
     lastfm::{lookup_key, LastFmJob},
-    media::query_ytdlp_limited,
     recommendations::{
         home::{finish_row, plan_home, HomeCache, RowPlan},
         rng::Rng,
         taste::{genres_from_tags, ListenTracker, Taste},
     },
+    storage,
 };
 
-use super::{home_paging::HomePaging, YtMusicApp};
+use super::{home_paging::HomePaging, Engine};
 
 const TASTE_FILE: &str = "taste.json";
 const SESSION_FILE: &str = "session.json";
@@ -45,7 +44,7 @@ const SESSION_QUEUE: usize = 100;
 const LOCAL_ROW: usize = 200;
 
 /// Seconds since 1970, the clock taste and Home are stamped with.
-pub(super) fn unix_now() -> u64 {
+pub fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |time| time.as_secs())
@@ -63,35 +62,35 @@ struct Session {
 }
 
 /// Each planned Home row with the songs its sources returned.
-pub(super) type HomeBuild = Vec<(RowPlan, Vec<Track>)>;
+pub type HomeBuild = Vec<(RowPlan, Vec<Track>)>;
 
 #[derive(Default)]
-pub(super) struct Library {
-    pub(super) taste: Taste,
-    pub(super) playlists: Playlists,
-    pub(super) playlists_changed: bool,
+pub struct Library {
+    pub taste: Taste,
+    pub playlists: Playlists,
+    pub playlists_changed: bool,
     listens: ListenTracker,
     /// Data was loaded from disk, so it may be saved back. Tests never set it.
     persist: bool,
     taste_changed: bool,
-    pub(super) settings_changed: bool,
+    pub settings_changed: bool,
     last_tick: Option<Instant>,
     /// The session as last written, to skip saving it unchanged.
     saved_session: String,
     tags_pending: HashSet<String>,
     tags_retry_at: Option<Instant>,
-    pub(super) home: HomeCache,
+    pub home: HomeCache,
     home_rx: Option<Receiver<HomeBuild>>,
     home_retry_at: Option<Instant>,
     /// Loading more of Home as the user scrolls.
-    pub(super) paging: HomePaging,
+    pub paging: HomePaging,
     /// Liked and recently played songs, refreshed when taste changes.
-    pub(super) liked: Vec<Track>,
-    pub(super) recent: Vec<Track>,
+    pub liked: Vec<Track>,
+    pub recent: Vec<Track>,
 }
 
 impl Library {
-    pub(super) fn building_home(&self) -> bool {
+    pub fn building_home(&self) -> bool {
         self.home_rx.is_some()
     }
 
@@ -102,7 +101,7 @@ impl Library {
     }
 
     /// Every song Home shows, for cover lookups and the image cache.
-    pub(super) fn home_tracks(&self) -> impl Iterator<Item = &Track> {
+    pub fn home_tracks(&self) -> impl Iterator<Item = &Track> {
         self.home
             .rows
             .iter()
@@ -112,10 +111,10 @@ impl Library {
     }
 }
 
-impl YtMusicApp {
+impl Engine {
     /// Load taste, Home, and the last session, and apply saved preferences.
     /// Call after `load_settings`.
-    pub(super) fn load_library(&mut self) {
+    pub fn load_library(&mut self) {
         self.library.persist = true;
         self.library.taste = storage::read(TASTE_FILE).unwrap_or_default();
         self.library.home = storage::read(HOME_FILE).unwrap_or_default();
@@ -175,7 +174,7 @@ impl YtMusicApp {
 
     /// Called every frame: follow listening, collect background results,
     /// and every few seconds save, look up genres, and check Home.
-    pub(super) fn tick_library(&mut self) {
+    pub fn tick_library(&mut self) {
         self.follow_listening();
         self.poll_home();
         if self
@@ -186,12 +185,7 @@ impl YtMusicApp {
             return;
         }
         self.library.last_tick = Some(Instant::now());
-        // Linux: switch to MusiKPL's own yt-dlp once it has downloaded.
-        if let Some(managed) = crate::infrastructure::bundled::managed_yt_dlp() {
-            if self.tools.yt_dlp != managed {
-                self.tools.yt_dlp = managed;
-            }
-        }
+
         self.save_library(false);
         self.request_tags();
         self.refresh_home(false);
@@ -220,7 +214,7 @@ impl YtMusicApp {
 
     /// Write whatever changed. `now` writes on this thread (when closing);
     /// otherwise files are written in the background.
-    pub(super) fn save_library(&mut self, now: bool) {
+    pub fn save_library(&mut self, now: bool) {
         if !self.library.persist {
             return;
         }
@@ -298,7 +292,7 @@ impl YtMusicApp {
     }
 
     /// A genre lookup finished; `None` means it failed and is retried later.
-    pub(super) fn receive_tags(&mut self, video_id: &str, tags: Option<Vec<String>>) {
+    pub fn receive_tags(&mut self, video_id: &str, tags: Option<Vec<String>>) {
         self.library.tags_pending.remove(video_id);
         match tags {
             Some(tags) => {
@@ -313,7 +307,7 @@ impl YtMusicApp {
 
     /// Like or unlike a song; with Last.fm connected, it is loved or
     /// unloved on the user's profile too.
-    pub(super) fn toggle_like(&mut self, track: &Track) {
+    pub fn toggle_like(&mut self, track: &Track) {
         let liked = self.library.taste.toggle_like(track, unix_now());
         self.library.taste_changed();
         if let Some(credentials) = self.credentials() {
@@ -325,12 +319,12 @@ impl YtMusicApp {
         }
     }
 
-    pub(super) fn is_liked(&self, id: &str) -> bool {
+    pub fn is_liked(&self, id: &str) -> bool {
         self.library.taste.is_liked(id)
     }
 
     /// Forget everything listened to and liked.
-    pub(super) fn clear_taste(&mut self) {
+    pub fn clear_taste(&mut self) {
         self.library.taste = Taste::default();
         self.library.listens = ListenTracker::default();
         self.library.taste_changed();
@@ -344,7 +338,7 @@ impl YtMusicApp {
 
     /// Rebuild Home in the background when it is old, or when asked to.
     /// Before the first-run genre picker is done there is nothing to go on.
-    pub(super) fn refresh_home(&mut self, force: bool) {
+    pub fn refresh_home(&mut self, force: bool) {
         if self.library.building_home() {
             return;
         }
@@ -373,18 +367,15 @@ impl YtMusicApp {
 
     /// Search for each planned row's songs on a background thread, one
     /// yt-dlp at a time so building Home never hogs the PC.
-    pub(super) fn spawn_home_build(&self, plans: Vec<RowPlan>) -> Receiver<HomeBuild> {
-        let tools = self.tools.clone();
-        let registry = self.registry.clone();
+    pub fn spawn_home_build(&self, plans: Vec<RowPlan>) -> Receiver<HomeBuild> {
+        let extractor = self.extractor.clone();
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
             let mut build = Vec::new();
             for plan in plans {
                 let mut candidates = Vec::new();
                 for source in &plan.sources {
-                    if let Ok(items) =
-                        query_ytdlp_limited(&tools, source, true, Some(30), &registry)
-                    {
+                    if let Ok(items) = extractor.list(source, Some(30)) {
                         candidates.extend(items);
                     }
                 }
@@ -395,7 +386,7 @@ impl YtMusicApp {
         receiver
     }
 
-    pub(super) fn save_home(&self) {
+    pub fn save_home(&self) {
         if self.library.persist {
             storage::write_in_background(HOME_FILE, &self.library.home);
         }
@@ -470,7 +461,7 @@ mod tests {
 
     #[test]
     fn a_restored_session_waits_paused_without_loading() {
-        let mut app = YtMusicApp::default();
+        let mut app = Engine::default();
         app.restore_session(Session {
             track: Some(track("last")),
             position: 42.0,
@@ -491,7 +482,7 @@ mod tests {
 
     #[test]
     fn likes_show_up_in_the_liked_row() {
-        let mut app = YtMusicApp::default();
+        let mut app = Engine::default();
         app.toggle_like(&track("x"));
         assert!(app.is_liked("x"));
         assert_eq!(app.library.liked.len(), 1);
@@ -501,7 +492,7 @@ mod tests {
 
     #[test]
     fn failed_genre_lookups_back_off() {
-        let mut app = YtMusicApp::default();
+        let mut app = Engine::default();
         app.library.tags_pending.insert("x".into());
         app.receive_tags("x", None);
         assert!(app.library.tags_pending.is_empty());

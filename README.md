@@ -202,8 +202,8 @@ The setup lives in `installer/` (a workspace member). It embeds `target/release/
 
 | Folder | What's in it |
 |---|---|
-| `core/` | `musikpl-core`: everything that isn't drawing or the operating system (recommendations, playlists, Last.fm, Jams, friends, the player's state). Shared with the Android app. Platforms plug in through `AudioOutput` (mpv, ExoPlayer) and `Extractor` (yt-dlp, NewPipe). |
-| `src/` | The desktop app: the egui interface, mpv and yt-dlp, Windows and Linux integration. |
+| `core/` | `musikpl-core`: the app without drawing. Its `Engine` holds what plays, the queue and Auto Mix, search, Home, playlists, Last.fm, Jams and friends; a shell ticks it, draws its state and calls its methods. Shared with the Android app. Platforms plug in through `AudioOutput` (mpv, ExoPlayer) and `Extractor` (yt-dlp, NewPipe). |
+| `src/` | The desktop shell: the egui interface around the engine, mpv and yt-dlp, the tray, updates, Windows and Linux integration. |
 | `installer/` | The Windows setup. |
 
 ## 🎧 Jam

@@ -2629,6 +2629,7 @@ name = "musikpl-core"
 version = "3.4.0"
 dependencies = [
  "base64 0.22.1",
+ "image",
  "iroh",
  "md5",
  "serde",

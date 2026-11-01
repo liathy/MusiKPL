@@ -9,17 +9,16 @@ use std::{
 
 use crate::{
     domain::{song_info, youtube_mix_url, Track},
-    media::query_ytdlp_limited,
     recommendations::{home::usable_songs, rng::Rng},
 };
 
-use super::{library::unix_now, YtMusicApp};
+use super::{library::unix_now, Engine};
 
 /// Suggestions shown per page.
-pub(super) const RECS_PAGE: usize = 10;
+pub const RECS_PAGE: usize = 10;
 
 #[derive(Default)]
-pub(super) struct PlaylistRecs {
+pub struct PlaylistRecs {
     /// The playlist these are for.
     playlist: Option<u64>,
     tracks: Vec<Track>,
@@ -32,14 +31,14 @@ pub(super) struct PlaylistRecs {
 }
 
 impl PlaylistRecs {
-    pub(super) fn loading(&self) -> bool {
+    pub fn loading(&self) -> bool {
         self.rx.is_some()
     }
 }
 
-impl YtMusicApp {
+impl Engine {
     /// Suggestions to show for the open playlist, without songs added since.
-    pub(super) fn playlist_recs(&self) -> Vec<&Track> {
+    pub fn playlist_recs(&self) -> Vec<&Track> {
         let Some(id) = self.open_playlist_id() else {
             return Vec::new();
         };
@@ -55,7 +54,7 @@ impl YtMusicApp {
     }
 
     /// The user scrolled to the end of the suggestions.
-    pub(super) fn more_playlist_recs(&mut self) {
+    pub fn more_playlist_recs(&mut self) {
         let recs = &mut self.playlist_recs;
         if recs.tracks.len() > recs.shown {
             recs.shown += RECS_PAGE;
@@ -67,7 +66,7 @@ impl YtMusicApp {
 
     /// Called every frame: keep enough suggestions ready for the open
     /// playlist, and collect finished searches.
-    pub(super) fn keep_playlist_recs(&mut self) {
+    pub fn keep_playlist_recs(&mut self) {
         self.poll_playlist_recs();
         let Some(id) = self.open_playlist_id() else {
             return;
@@ -112,13 +111,10 @@ impl YtMusicApp {
             return;
         };
         self.playlist_recs.used.insert(source.clone());
-        let tools = self.tools.clone();
-        let registry = self.registry.clone();
+        let extractor = self.extractor.clone();
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
-            let _ = sender.send(
-                query_ytdlp_limited(&tools, &source, true, Some(30), &registry).unwrap_or_default(),
-            );
+            let _ = sender.send(extractor.list(&source, Some(30)).unwrap_or_default());
         });
         self.playlist_recs.rx = Some(receiver);
     }
@@ -155,7 +151,7 @@ impl YtMusicApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::menu::PlaylistTarget;
+    use crate::domain::PlaylistTarget;
 
     fn track(id: &str, artist: &str) -> Track {
         Track {
@@ -168,8 +164,7 @@ mod tests {
 
     #[test]
     fn suggestions_skip_songs_in_the_playlist_and_page() {
-        let mut app = YtMusicApp::default();
-        app.tools.yt_dlp = "missing-yt-dlp-for-tests".into();
+        let mut app = Engine::default();
         let id = app.new_playlist();
         app.add_to_playlist(track("in", "A"), PlaylistTarget::Existing(id));
         app.keep_playlist_recs();

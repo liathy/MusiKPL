@@ -9,7 +9,7 @@ mod uninstall;
 
 // The shared core (also used by the Android app), under the names the
 // desktop has always used.
-use musikpl_core::{domain, friends, jam, lastfm, playback, recommendations};
+use musikpl_core::{domain, jam, lastfm, recommendations};
 
 use infrastructure::{install::UNINSTALL_ARG, updater};
 

@@ -12,7 +12,6 @@ pub struct Queue {
 }
 
 impl Queue {
-    #[cfg(any(test, feature = "testing"))]
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
