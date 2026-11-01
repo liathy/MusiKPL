@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "MusiKPL"
-version = "3.4.0"
+version = "3.5.0"
 dependencies = [
  "ab_glyph",
  "base64 0.22.1",
@@ -2806,7 +2806,7 @@ dependencies = [
 
 [[package]]
 name = "musikpl-core"
-version = "3.4.0"
+version = "3.5.0"
 dependencies = [
  "base64 0.22.1",
  "image",
@@ -2821,7 +2821,7 @@ dependencies = [
 
 [[package]]
 name = "musikpl-mobile"
-version = "3.4.0"
+version = "3.5.0"
 dependencies = [
  "musikpl-core",
  "uniffi",
@@ -2829,7 +2829,7 @@ dependencies = [
 
 [[package]]
 name = "musikpl-setup"
-version = "3.4.0"
+version = "3.5.0"
 dependencies = [
  "eframe",
  "embed-resource",
