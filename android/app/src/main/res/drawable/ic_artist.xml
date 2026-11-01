@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- From src/assets/icons/artist.svg. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M18.5,10H22v2H20v5.5q0,1.05-0.72,1.77T17.5,20t-1.77-0.73T15,17.5t0.73-1.78T17.5,15q0.2,0 0.45,0.04T18.5,15.2V10ZM3,20V17.2q0-0.88 0.44-1.57T4.6,14.55q1.55-0.78 3.15-1.16T11,13q1.05,0 2.09,0.16t2.09,0.49q-0.5,0.3-0.9,0.73t-0.7,0.92q-0.65-0.15-1.29-0.22T11,15q-1.42,0-2.8,0.35t-2.7,1Q5.28,16.48 5.14,16.7Q5,16.93 5,17.2V18h8.03q0.05,0.5 0.24,1t0.51,1H3Zm5.18-9.18Q7,9.65 7,8T8.18,5.18T11,4t2.83,1.18T15,8t-1.17,2.82T11,12T8.18,10.83Zm4.24-1.41Q13,8.82 13,8T12.41,6.59T11,6Q10.18,6 9.59,6.59Q9,7.18 9,8T9.59,9.41T11,10t1.41-0.59ZM11,8Zm0,10Z"
+        android:fillColor="#FFFFFFFF" />
+</vector>

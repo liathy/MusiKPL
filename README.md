@@ -168,6 +168,21 @@ To build the Linux binary (`dist\MusiKPL-linux-x86_64`) from Windows, start Dock
 
 On Linux itself, `cargo build --release -p MusiKPL` works directly.
 
+### Build for Android
+
+With Android Studio installed (SDK, NDK, and its Java), once:
+
+```powershell
+rustup target add aarch64-linux-android
+cargo install cargo-ndk
+```
+
+Then build `dist\MusiKPL-android-arm64.apk` (add `-Quick` for a fast debug build, `-Install` to put it on a connected phone over USB or wireless ADB):
+
+```powershell
+.\scripts\build-android.ps1
+```
+
 ### Run in development
 
 ```bash
@@ -205,6 +220,8 @@ The setup lives in `installer/` (a workspace member). It embeds `target/release/
 | `core/` | `musikpl-core`: the app without drawing. Its `Engine` holds what plays, the queue and Auto Mix, search, Home, playlists, Last.fm, Jams and friends; a shell ticks it, draws its state and calls its methods. Shared with the Android app. Platforms plug in through `AudioOutput` (mpv, ExoPlayer) and `Extractor` (yt-dlp, NewPipe). |
 | `src/` | The desktop shell: the egui interface around the engine, mpv and yt-dlp, the tray, updates, Windows and Linux integration. |
 | `installer/` | The Windows setup. |
+| `mobile/` | The engine for Android: `musikpl-mobile`, exported to Kotlin with UniFFI. |
+| `android/` | The Android app (Kotlin, Jetpack Compose): ExoPlayer in a background media service, NewPipe (with yt-dlp as a fallback) for YouTube, and the engine for everything else. |
 
 ## 🎧 Jam
 

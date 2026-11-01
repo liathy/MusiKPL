@@ -7,7 +7,7 @@ license = "GPL-3.0-or-later"
 
 # The setup (installer/) builds separately: scripts/build-release.ps1.
 [workspace]
-members = [".", "core", "installer"]
+members = [".", "core", "installer", "mobile"]
 resolver = "2"
 
 [[bin]]

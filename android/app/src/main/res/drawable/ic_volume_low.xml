@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- From src/assets/icons/volume_low.svg. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M3 9.5V14.5C3 15.05 3.45 15.5 4 15.5H7L11.3 19.1C11.95 19.65 13 19.19 13 18.33V5.67C13 4.81 11.95 4.35 11.3 4.9L7 8.5H4C3.45 8.5 3 8.95 3 9.5Z"
+        android:fillColor="#FFFFFFFF" />
+    <path
+        android:pathData="M16 9.5C16.65 10.2 17 11.08 17 12C17 12.92 16.65 13.8 16 14.5"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2"
+        android:strokeLineCap="round" />
+</vector>

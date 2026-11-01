@@ -1,0 +1,22 @@
+[package]
+name = "musikpl-mobile"
+version = "3.4.0"
+edition = "2021"
+description = "MusiKPL's engine for the Android app, through UniFFI"
+license = "GPL-3.0-or-later"
+
+[lib]
+name = "musikpl_mobile"
+# cdylib: the libmusikpl_mobile.so the Android app loads; lib: for the
+# binding generator below.
+crate-type = ["cdylib", "lib"]
+
+[[bin]]
+# Generates the Kotlin bindings from the built library:
+# cargo run -p musikpl-mobile --bin uniffi-bindgen -- generate --library <so> --language kotlin --out-dir <dir>
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+
+[dependencies]
+musikpl-core = { path = "../core" }
+uniffi = { version = "0.32", features = ["cli"] }
