@@ -4,12 +4,13 @@
 use eframe::egui::{self, pos2, vec2, Align2, CursorIcon, Id, Rect, Sense, Ui};
 
 use crate::{
-    domain::{format_position, Cover, Track},
+    domain::{format_position, Cover, Playlists, Track},
     theme::Theme,
     ui::{
         fonts,
         icons::IconTextures,
         layout::{footer_columns, transport_buttons},
+        menu::{add_to_playlist_menu, PlaylistTarget},
         responsive::ResponsiveUi,
         widgets::{self, marquee, paint_icon_button, slider, ButtonColors},
     },
@@ -24,6 +25,8 @@ pub(crate) enum FooterAction {
     SetVolume(u8),
     ToggleQueue,
     ToggleLike,
+    AddToPlaylist(PlaylistTarget),
+    ToggleMute,
 }
 
 pub(crate) struct FooterState<'a> {
@@ -39,6 +42,7 @@ pub(crate) struct FooterState<'a> {
     pub(crate) guest: bool,
     pub(crate) queue_open: bool,
     pub(crate) liked: bool,
+    pub(crate) playlists: &'a Playlists,
 }
 
 pub(crate) fn show(
@@ -113,7 +117,41 @@ fn track_info(
         {
             actions.push(FooterAction::ToggleLike);
         }
-        heart_rect.left() - r.rem(0.5)
+        // Add to playlist, left of the heart.
+        let add_rect = heart_rect.translate(egui::vec2(-(heart_size + r.rem(0.25)), 0.0));
+        let add = ui.interact(add_rect, Id::new("footer_add_to_playlist"), Sense::click());
+        paint_icon_button(
+            ui,
+            add_rect,
+            &add,
+            &icons.playlist_add,
+            r.rem2(1.25, 1.25),
+            heart_size / 2.0,
+            ButtonColors::ghost(theme),
+        );
+        let popup = Id::new("footer_playlist_popup");
+        let add = add
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_text("Add to playlist");
+        if add.clicked() {
+            ui.memory_mut(|memory| memory.toggle_popup(popup));
+        }
+        if let Some(track) = state.track {
+            let picked = egui::popup::popup_above_or_below_widget(
+                ui,
+                popup,
+                &add,
+                egui::AboveOrBelow::Above,
+                egui::PopupCloseBehavior::CloseOnClickOutside,
+                |ui| add_to_playlist_menu(ui, state.playlists, &track.id, r),
+            )
+            .flatten();
+            if let Some(target) = picked {
+                ui.memory_mut(|memory| memory.close_popup());
+                actions.push(FooterAction::AddToPlaylist(target));
+            }
+        }
+        add_rect.left() - r.rem(0.5)
     } else {
         content.right()
     };
@@ -329,32 +367,38 @@ fn volume_and_queue(
     let left = column.center().x - (group_width + gap + queue_size) / 2.0;
     let center_y = column.center().y;
 
-    // "Volume" above the slider and its value.
-    let label_height = r.rem(2.3125);
-    let row_height = r.rem(2.6875);
-    let top = center_y - (label_height + row_height) / 2.0;
-    ui.painter().text(
-        pos2(left + group_width / 2.0, top + label_height / 2.0),
-        Align2::CENTER_CENTER,
-        "Volume",
-        fonts::display(r.rem(1.5)),
-        theme.text,
+    // Speaker icon (its waves follow the level; click to mute) and slider,
+    // like Spotify.
+    let icon_size = r.rem(2.25);
+    let slider_width = group_width - icon_size - r.rem(0.5);
+    let icon_rect = Rect::from_center_size(
+        pos2(left + icon_size / 2.0, center_y),
+        egui::Vec2::splat(icon_size),
     );
-
-    let row_top = top + label_height;
-    let value_text = state.volume.to_string();
-    let value_font = fonts::display(r.rem(1.5));
-    let value_width = ui
-        .painter()
-        .layout_no_wrap(value_text.clone(), value_font.clone(), theme.text)
-        .size()
-        .x;
-    let box_width = (value_width + r.rem(1.0)).max(r.rem(2.75));
-    let slider_width = r.rem(7.5);
-    let row_width = slider_width + r.rem(0.75) + box_width;
-    let row_left = left + (group_width - row_width) / 2.0;
+    let speaker = ui.interact(icon_rect, Id::new("footer_mute"), Sense::click());
+    let (speaker_icon, tooltip) = match state.volume {
+        0 => (&icons.volume_off, "Unmute"),
+        1..=49 => (&icons.volume_low, "Mute"),
+        _ => (&icons.volume_high, "Mute"),
+    };
+    paint_icon_button(
+        ui,
+        icon_rect,
+        &speaker,
+        speaker_icon,
+        r.rem2(1.375, 1.375),
+        icon_size / 2.0,
+        ButtonColors::ghost(theme),
+    );
+    if speaker
+        .on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text(tooltip)
+        .clicked()
+    {
+        actions.push(FooterAction::ToggleMute);
+    }
     let slider_rect = Rect::from_min_size(
-        pos2(row_left, row_top + (row_height - r.rem(1.0)) / 2.0),
+        pos2(icon_rect.right() + r.rem(0.5), center_y - r.rem(0.5)),
         vec2(slider_width, r.rem(1.0)),
     );
     let mut volume = f32::from(state.volume);
@@ -372,24 +416,6 @@ fn volume_and_queue(
             volume.round().clamp(0.0, 100.0) as u8
         ));
     }
-    let value_box = Rect::from_min_size(
-        pos2(slider_rect.right() + r.rem(0.75), row_top),
-        vec2(box_width, row_height),
-    );
-    ui.painter().rect(
-        value_box,
-        r.rem(0.625),
-        theme.panel,
-        egui::Stroke::new(1.0_f32, theme.border),
-    );
-    ui.painter().text(
-        value_box.center(),
-        Align2::CENTER_CENTER,
-        value_text,
-        value_font,
-        theme.text,
-    );
-
     // Queue button.
     let queue_rect = Rect::from_center_size(
         pos2(left + group_width + gap + queue_size / 2.0, center_y),

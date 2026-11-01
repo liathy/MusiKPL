@@ -163,6 +163,26 @@ pub fn retarget_start_with_windows(exe: &Path) {
     }
 }
 
+/// Close MusiKPL if it is running from `exe`, so it can be replaced. It is
+/// asked to close like the user pressing ✕ (so it saves everything), and
+/// stopped only if it hasn't after a few seconds. Copies running from
+/// anywhere else (a portable MusiKPL.exe, say) are left alone.
+pub fn close_running(exe: &Path) {
+    let _ = close_running_script(exe);
+}
+
+fn close_running_script(exe: &Path) -> Result<(), String> {
+    let exe = quoted(&exe.display().to_string());
+    powershell(&format!(
+        "$mine = @(Get-Process MusiKPL -ErrorAction SilentlyContinue | \
+             Where-Object {{ $_.Path -and $_.Path -ieq {exe} }}); \
+         if ($mine.Count -eq 0) {{ return }}; \
+         $mine | ForEach-Object {{ [void]$_.CloseMainWindow() }}; \
+         $mine | ForEach-Object {{ [void]$_.WaitForExit(8000) }}; \
+         $mine | Where-Object {{ -not $_.HasExited }} | Stop-Process -Force -ErrorAction SilentlyContinue"
+    ))
+}
+
 /// Remove the install folder once this process has exited, since a running
 /// exe can't delete itself.
 pub fn remove_dir_after_exit(dir: &Path) -> Result<(), String> {
@@ -326,6 +346,15 @@ mod tests {
             ))
             .expect("the folder expression should resolve");
         }
+    }
+
+    /// Runs the real script for a path nothing runs from: it must parse and
+    /// succeed, and touches no process (they are matched by exact path).
+    #[cfg(windows)]
+    #[test]
+    fn closing_a_copy_that_isnt_running_does_nothing() {
+        close_running_script(Path::new(r"C:\musikpl-test-nowhere\MusiKPL.exe"))
+            .expect("the script runs");
     }
 
     #[test]

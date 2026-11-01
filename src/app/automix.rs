@@ -13,7 +13,7 @@ use std::{
 
 use crate::{
     domain::Track,
-    media::query_ytdlp,
+    media::query_ytdlp_limited,
     recommendations::{
         mix_sources, retry_delay, select_mix_items, Exclusions, MIX_BATCH, MIX_LOW_WATER,
     },
@@ -22,6 +22,10 @@ use crate::{
 use super::{errors::AppError, library::unix_now, YtMusicApp};
 
 type MixResult = Result<Vec<Track>, String>;
+
+/// Songs read from each source: plenty for a refill, and it stops yt-dlp
+/// from paging through a Mix, which never ends.
+const MIX_SOURCE_LIMIT: usize = 25;
 
 #[derive(Default)]
 pub(super) struct AutoMix {
@@ -84,9 +88,32 @@ impl YtMusicApp {
         let (sender, receiver) = mpsc::channel();
         self.automix.rx = Some(receiver);
         std::thread::spawn(move || {
+            // All sources are searched at once, so a Mix that YouTube doesn't
+            // have costs no extra wait; the results are then used in order of
+            // preference (the Mix first).
+            let pending: Vec<_> = sources
+                .into_iter()
+                .map(|source| {
+                    let (tools, registry) = (tools.clone(), registry.clone());
+                    let (sender, receiver) = mpsc::channel();
+                    std::thread::spawn(move || {
+                        let _ = sender.send(query_ytdlp_limited(
+                            &tools,
+                            &source,
+                            true,
+                            Some(MIX_SOURCE_LIMIT),
+                            &registry,
+                        ));
+                    });
+                    receiver
+                })
+                .collect();
             let mut last_error = None;
-            for source in sources {
-                match query_ytdlp(&tools, &source, true, &registry) {
+            for receiver in pending {
+                let result = receiver
+                    .recv()
+                    .unwrap_or_else(|_| Err("the search stopped unexpectedly".into()));
+                match result {
                     Ok(items) => {
                         let items = preferences.rank(items);
                         let picked = select_mix_items(items, &mut exclusions, MIX_BATCH);

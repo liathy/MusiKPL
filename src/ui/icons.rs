@@ -39,6 +39,13 @@ icon_files! {
     heart_filled => "heart_filled.svg",
     refresh => "refresh.svg",
     history => "history.svg",
+    chevron => "chevron.svg",
+    edit => "edit.svg",
+    playlist => "playlist.svg",
+    playlist_add => "playlist_add.svg",
+    volume_off => "volume_off.svg",
+    volume_low => "volume_low.svg",
+    volume_high => "volume_high.svg",
 }
 
 fn load(ctx: &egui::Context, name: &str, bytes: &[u8]) -> Result<TextureHandle, String> {

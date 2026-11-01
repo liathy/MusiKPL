@@ -6,12 +6,13 @@ use eframe::egui::{
 };
 
 use crate::{
-    domain::{CoverArt, Track},
+    domain::{CoverArt, Playlists, Track},
     theme::Theme,
     ui::{
         fonts,
         icons::{paint_icon, IconTextures},
         layout::grid_columns,
+        menu::{add_to_playlist_menu, PlaylistTarget},
         responsive::ResponsiveUi,
         widgets::{self, elided, hover_amount, item_id, mix, pointer_amount},
     },
@@ -22,6 +23,7 @@ pub(crate) enum ResultAction {
     Play(Track),
     AddToMix(Track),
     ToggleLike(Track),
+    AddToPlaylist(Track, PlaylistTarget),
 }
 
 pub(crate) struct ResultsView<'a> {
@@ -34,6 +36,7 @@ pub(crate) struct ResultsView<'a> {
     pub(crate) covers: &'a CoverArt,
     pub(crate) in_mix: &'a dyn Fn(&str) -> bool,
     pub(crate) liked: &'a dyn Fn(&str) -> bool,
+    pub(crate) playlists: &'a Playlists,
 }
 
 pub(crate) fn show_results(
@@ -122,6 +125,7 @@ fn result_card(
         covers: view.covers,
         in_mix: view.in_mix,
         liked: view.liked,
+        playlists: view.playlists,
     };
     if let Some(action) = song_card(ui, size, track, &cards, icons, theme, r) {
         actions.push(action);
@@ -134,6 +138,7 @@ pub(crate) struct CardContext<'a> {
     pub(crate) covers: &'a CoverArt,
     pub(crate) in_mix: &'a dyn Fn(&str) -> bool,
     pub(crate) liked: &'a dyn Fn(&str) -> bool,
+    pub(crate) playlists: &'a Playlists,
 }
 
 /// The card size used in grids and Home rows.
@@ -200,7 +205,8 @@ pub(crate) fn song_card(
         Align2::LEFT_CENTER,
     );
 
-    // + Add to mix, on the cover's bottom-right corner.
+    // + on the cover's bottom-right corner: asks whether to add the song to
+    // the mix or to a playlist.
     let button_size = r.rem(2.0);
     let button_rect = Rect::from_min_size(
         cover_rect.max - egui::Vec2::splat(button_size + r.rem(0.5)),
@@ -227,74 +233,118 @@ pub(crate) fn song_card(
         Rect::from_center_size(button_rect.center(), r.rem2(1.0, 1.0)),
         mix(theme.text, Color32::BLACK, light),
     );
-    let tooltip = match (view.guest, added) {
-        (true, _) => "Request from the host",
-        (false, true) => "In your mix",
-        (false, false) => "Add to mix",
-    };
 
-    // ♥ Like, on the cover's top-right corner: always shown when liked,
-    // otherwise while the card is hovered.
+    // A small ♥ on the cover's top-right corner marks liked songs; liking
+    // happens from the + menu.
     let liked = (view.liked)(&track.id);
-    let heart_rect = Rect::from_min_size(
-        pos2(
-            cover_rect.right() - button_size - r.rem(0.5),
-            cover_rect.top() + r.rem(0.5),
-        ),
-        egui::Vec2::splat(button_size),
-    );
-    let heart = ui.interact(heart_rect, item_id("like", &track.id), Sense::click());
-    let heart_hover = hover_amount(ui, &heart);
-    let heart_shown = if liked { 1.0 } else { hover.max(heart_hover) };
-    if heart_shown > 0.0 {
-        let painter = ui.painter();
-        painter.circle_filled(
-            heart_rect.center(),
-            button_size / 2.0,
-            Color32::from_black_alpha((178.0 * heart_shown) as u8),
+    if liked {
+        let badge = Rect::from_min_size(
+            pos2(
+                cover_rect.right() - r.rem(1.75) - r.rem(0.5),
+                cover_rect.top() + r.rem(0.5),
+            ),
+            r.rem2(1.75, 1.75),
+        );
+        ui.painter().circle_filled(
+            badge.center(),
+            badge.width() / 2.0,
+            Color32::from_black_alpha(178),
         );
         paint_icon(
-            painter,
-            if liked {
-                &icons.heart_filled
-            } else {
-                &icons.heart
-            },
-            Rect::from_center_size(heart_rect.center(), r.rem2(1.0, 1.0)),
-            mix(
-                Color32::TRANSPARENT,
-                mix(
-                    theme.text,
-                    theme.like,
-                    if liked { 1.0 } else { heart_hover },
-                ),
-                heart_shown,
-            ),
+            ui.painter(),
+            &icons.heart_filled,
+            Rect::from_center_size(badge.center(), r.rem2(0.875, 0.875)),
+            theme.like,
         );
     }
 
-    if heart
+    // Right-click: add to a playlist.
+    let mut added_to = None;
+    card.context_menu(|ui| {
+        added_to = add_to_playlist_menu(ui, view.playlists, &track.id, r);
+    });
+    if let Some(target) = added_to {
+        return Some(ResultAction::AddToPlaylist(track.clone(), target));
+    }
+
+    // A click is routed by where the pointer is, not by which widget egui
+    // picked: inside a scrolling row it sometimes handed a click on + to the
+    // card underneath, which then played the song.
+    let pointer = ui.input(|input| input.pointer.interact_pos());
+    let on_button = pointer.is_some_and(|pointer| button_rect.contains(pointer));
+    let clicked = card.clicked() || add.clicked();
+
+    let popup = item_id("add_popup", &track.id);
+    let add = add.on_hover_cursor(CursorIcon::PointingHand);
+    let add = if ui.memory(|memory| memory.is_popup_open(popup)) {
+        add
+    } else {
+        add.on_hover_text("Like, add to the mix or a playlist")
+    };
+    if clicked && on_button {
+        ui.memory_mut(|memory| memory.toggle_popup(popup));
+    }
+    let picked = egui::popup::popup_below_widget(
+        ui,
+        popup,
+        &add,
+        egui::PopupCloseBehavior::CloseOnClickOutside,
+        |ui| add_menu(ui, track, view, added, liked, r),
+    )
+    .flatten();
+    if let Some(action) = picked {
+        ui.memory_mut(|memory| memory.close_popup());
+        return Some(action);
+    }
+    if on_button {
+        return None;
+    }
+    let play = card
         .on_hover_cursor(CursorIcon::PointingHand)
-        .on_hover_text(if liked { "Unlike" } else { "Like" })
-        .clicked()
-    {
+        .on_hover_text(if view.guest {
+            "Add to the Jam queue"
+        } else {
+            "Play · right-click to add to a playlist"
+        })
+        .clicked();
+    play.then(|| ResultAction::Play(track.clone()))
+}
+/// The + menu: like the song, add it to the mix (or to the Jam's queue
+/// host), or add it to a playlist.
+fn add_menu(
+    ui: &mut Ui,
+    track: &Track,
+    view: &CardContext<'_>,
+    in_mix: bool,
+    liked: bool,
+    r: &ResponsiveUi,
+) -> Option<ResultAction> {
+    ui.set_min_width(r.rem(14.0));
+    let like = ui.add(
+        egui::Button::new(
+            egui::RichText::new(if liked { "♥ Unlike" } else { "♥ Like" })
+                .font(fonts::body(r.rem(0.9375))),
+        )
+        .frame(false),
+    );
+    if like.clicked() {
         return Some(ResultAction::ToggleLike(track.clone()));
     }
-    if add
-        .on_hover_cursor(CursorIcon::PointingHand)
-        .on_hover_text(tooltip)
-        .clicked()
-    {
-        return (!added).then(|| ResultAction::AddToMix(track.clone()));
+    let label = match (view.guest, in_mix) {
+        (true, _) => "Add to the Jam queue",
+        (false, true) => "✓ In your mix",
+        (false, false) => "Add to mix",
+    };
+    let mix = ui.add_enabled(
+        !in_mix,
+        egui::Button::new(egui::RichText::new(label).font(fonts::body(r.rem(0.9375)))).frame(false),
+    );
+    if mix.clicked() {
+        return Some(ResultAction::AddToMix(track.clone()));
     }
-    card.on_hover_cursor(CursorIcon::PointingHand)
-        .on_hover_text(if view.guest {
-            "Request from the host"
-        } else {
-            "Play"
-        })
-        .clicked()
-        .then(|| ResultAction::Play(track.clone()))
+    ui.separator();
+    add_to_playlist_menu(ui, view.playlists, &track.id, r)
+        .map(|target| ResultAction::AddToPlaylist(track.clone(), target))
 }
 
 fn empty_state(ui: &mut Ui, area: Rect, view: &ResultsView<'_>, theme: &Theme, r: &ResponsiveUi) {

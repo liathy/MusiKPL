@@ -13,10 +13,16 @@ pub(super) fn apply_footer_action(app: &mut YtMusicApp, action: FooterAction) {
         FooterAction::Next => app.next(),
         FooterAction::Seek(position) => app.seek(position),
         FooterAction::SetVolume(volume) => app.set_volume(volume),
+        FooterAction::ToggleMute => app.toggle_mute(),
         FooterAction::ToggleQueue => app.queue_open = !app.queue_open,
         FooterAction::ToggleLike => {
             if let Some(track) = app.shown_track().cloned() {
                 app.toggle_like(&track);
+            }
+        }
+        FooterAction::AddToPlaylist(target) => {
+            if let Some(track) = app.shown_track().cloned() {
+                app.add_to_playlist(track, target);
             }
         }
     }

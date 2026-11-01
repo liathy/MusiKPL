@@ -67,6 +67,18 @@ pub(crate) fn query_ytdlp(
     single: bool,
     registry: &ProcessRegistry,
 ) -> Result<Vec<Track>, String> {
+    query_ytdlp_limited(tools, query, single, None, registry)
+}
+
+/// Like [query_ytdlp], reading at most limit entries. YouTube Mixes
+/// never end, so without a limit yt-dlp keeps fetching more of them.
+pub(crate) fn query_ytdlp_limited(
+    tools: &Tools,
+    query: &str,
+    single: bool,
+    limit: Option<usize>,
+    registry: &ProcessRegistry,
+) -> Result<Vec<Track>, String> {
     tools.ready()?;
     let target = if single {
         query.to_string()
@@ -80,8 +92,11 @@ pub(crate) fn query_ytdlp(
         "--skip-download",
         "--flat-playlist",
         "--no-warnings",
-        &target,
     ]);
+    if let Some(limit) = limit {
+        command.args(["--playlist-end", &limit.to_string()]);
+    }
+    command.arg(&target);
     let output = run_registered(command, registry)?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());

@@ -23,11 +23,21 @@ pub(crate) enum HomeAction {
     ToggleGenre(String),
     FinishGenres,
     SkipGenres,
+    OpenPlaylist(u64),
+    /// The row was scrolled to its end: show or find more songs.
+    MoreInRow(String),
+    /// Home was scrolled to the bottom: add more rows.
+    MoreRows,
 }
 
 pub(crate) struct HomeRowView<'a> {
     pub(crate) title: &'a str,
+    /// The songs shown so far.
     pub(crate) tracks: &'a [Track],
+    /// A favorite playlist's row: its title opens the playlist.
+    pub(crate) playlist: Option<u64>,
+    /// More songs are being found for this row.
+    pub(crate) loading: bool,
 }
 
 pub(crate) struct HomeView<'a> {
@@ -37,6 +47,13 @@ pub(crate) struct HomeView<'a> {
     /// Showing the genre picker, with the genres picked so far.
     pub(crate) picking_genres: Option<&'a [String]>,
     pub(crate) cards: CardContext<'a>,
+    /// More rows are being built.
+    pub(crate) loading_rows: bool,
+}
+
+/// How close to the end (in pixels) counts as reaching it.
+fn near_end(offset: f32, viewport: f32, content: f32, margin: f32) -> bool {
+    content > viewport && offset + viewport >= content - margin
 }
 
 pub(crate) fn show(
@@ -50,7 +67,7 @@ pub(crate) fn show(
     let mut actions = Vec::new();
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(area), |ui| {
         ui.set_clip_rect(area);
-        egui::ScrollArea::vertical()
+        let output = egui::ScrollArea::vertical()
             .id_salt("home_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -70,8 +87,30 @@ pub(crate) fn show(
                         for (index, row) in view.rows.iter().enumerate() {
                             song_row(ui, index, row, view, icons, &theme, r, &mut actions);
                         }
+                        if view.loading_rows {
+                            ui.horizontal(|ui| {
+                                widgets::spinner(ui, r.rem(1.125));
+                                ui.label(
+                                    egui::RichText::new("Finding more for you…")
+                                        .font(fonts::body(r.rem(0.9375)))
+                                        .color(theme.secondary_text),
+                                );
+                            });
+                        }
                     });
             });
+        // Also when everything fits: more rows fill the screen.
+        let reached_bottom = output.content_size.y <= output.inner_rect.height()
+            || near_end(
+                output.state.offset.y,
+                output.inner_rect.height(),
+                output.content_size.y,
+                // Start a screen early, so new rows are ready on arrival.
+                output.inner_rect.height(),
+            );
+        if reached_bottom && view.picking_genres.is_none() && !view.rows.is_empty() {
+            actions.push(HomeAction::MoreRows);
+        }
     });
     actions
 }
@@ -86,19 +125,11 @@ fn header(
 ) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = r.rem(0.75);
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = r.rem(0.125);
-            ui.label(
-                egui::RichText::new("Home")
-                    .font(fonts::display(r.rem(1.75)))
-                    .color(theme.text),
-            );
-            ui.label(
-                egui::RichText::new("Picked from what you listen to most, plus something new")
-                    .font(fonts::body(r.rem(0.9375)))
-                    .color(theme.secondary_text),
-            );
-        });
+        ui.label(
+            egui::RichText::new("Home")
+                .font(fonts::display(r.rem(1.75)))
+                .color(theme.text),
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if view.building {
                 ui.label(
@@ -135,16 +166,31 @@ fn song_row(
     r: &ResponsiveUi,
     actions: &mut Vec<HomeAction>,
 ) {
-    ui.label(
-        egui::RichText::new(row.title)
-            .font(fonts::display(r.rem(1.375)))
-            .color(theme.text),
-    );
+    fonts::cover(ui.ctx(), row.title);
+    let title = egui::RichText::new(row.title)
+        .font(fonts::display(r.rem(1.375)))
+        .color(theme.text);
+    match row.playlist {
+        Some(id) => {
+            let title = ui
+                .add(egui::Label::new(title).sense(egui::Sense::click()))
+                .on_hover_cursor(CursorIcon::PointingHand)
+                .on_hover_text("Open playlist");
+            if title.clicked() {
+                actions.push(HomeAction::OpenPlaylist(id));
+            }
+        }
+        None => {
+            ui.label(title);
+        }
+    }
     ui.add_space(r.rem(0.5));
     let card = card_size(r);
-    egui::ScrollArea::horizontal()
+    let output = egui::ScrollArea::horizontal()
         .id_salt(("home_row", index, row.title))
         .auto_shrink([false, true])
+        // Rows scroll by dragging or Shift + wheel, without a bar.
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = r.rem(1.0);
@@ -153,8 +199,24 @@ fn song_row(
                         actions.push(HomeAction::Card(action));
                     }
                 }
+                if row.loading {
+                    let (rect, _) = ui.allocate_exact_size(card, egui::Sense::hover());
+                    ui.put(
+                        egui::Rect::from_center_size(rect.center(), r.rem2(1.5, 1.5)),
+                        |ui: &mut Ui| widgets::spinner(ui, r.rem(1.5)),
+                    );
+                }
             });
         });
+    if near_end(
+        output.state.offset.x,
+        output.inner_rect.width(),
+        output.content_size.x,
+        // A few cards early, so the next batch is ready on arrival.
+        card.x * 3.0,
+    ) {
+        actions.push(HomeAction::MoreInRow(row.title.to_owned()));
+    }
     ui.add_space(r.rem(1.5));
 }
 

@@ -1,9 +1,5 @@
-//! Where a track's cover image comes from.
-//!
-//! Every YouTube video has a thumbnail, so it is always the fallback. When
-//! Last.fm knows the song's album, its square album art is preferred.
-
-use std::collections::HashMap;
+//! Where a track's cover image comes from: its YouTube thumbnail, which
+//! every video has and which loads straight away.
 
 use super::Track;
 
@@ -15,40 +11,15 @@ pub(crate) struct Cover {
     pub(crate) uv: [f32; 4],
 }
 
-const FULL_IMAGE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
-
-/// Album art found on Last.fm, by YouTube video ID. `None` records a lookup
-/// that is running or found nothing, so it is not repeated.
+/// Covers for songs on screen.
 #[derive(Default)]
-pub(crate) struct CoverArt {
-    found: HashMap<String, Option<String>>,
-}
+pub(crate) struct CoverArt;
 
 impl CoverArt {
-    pub(crate) fn insert(&mut self, video_id: String, url: Option<String>) {
-        self.found.insert(video_id, url);
-    }
-
-    pub(crate) fn has_looked_up(&self, video_id: &str) -> bool {
-        self.found.contains_key(video_id)
-    }
-
-    /// Mark a lookup as started so it is only requested once.
-    pub(crate) fn mark_pending(&mut self, video_id: &str) {
-        self.found.entry(video_id.to_owned()).or_insert(None);
-    }
-
     pub(crate) fn cover_for(&self, track: &Track) -> Option<Cover> {
-        if let Some(Some(url)) = self.found.get(&track.id) {
-            return Some(Cover {
-                url: url.clone(),
-                uv: FULL_IMAGE,
-            });
-        }
         youtube_thumbnail(&track.id)
     }
 }
-
 /// The video's 320×180 thumbnail, cropped to its centered square. Music
 /// uploads place the album art in the middle of the 16:9 frame.
 pub(crate) fn youtube_thumbnail(video_id: &str) -> Option<Cover> {
@@ -75,15 +46,6 @@ fn is_video_id(id: &str) -> bool {
 mod tests {
     use super::*;
 
-    fn track(id: &str) -> Track {
-        Track {
-            title: "Song".into(),
-            id: id.into(),
-            duration: None,
-            channel: "Artist".into(),
-        }
-    }
-
     #[test]
     fn thumbnails_are_square_center_crops() {
         let cover = youtube_thumbnail("dQw4w9WgXcQ").unwrap();
@@ -102,18 +64,5 @@ mod tests {
     fn unsafe_ids_get_no_url() {
         assert!(youtube_thumbnail("../../etc").is_none());
         assert!(youtube_thumbnail("").is_none());
-    }
-
-    #[test]
-    fn album_art_is_preferred_when_found() {
-        let mut art = CoverArt::default();
-        art.mark_pending("abc");
-        assert!(art.has_looked_up("abc"));
-        assert!(art.cover_for(&track("abc")).unwrap().url.contains("ytimg"));
-
-        art.insert("abc".into(), Some("https://lastfm.example/a.png".into()));
-        let cover = art.cover_for(&track("abc")).unwrap();
-        assert_eq!(cover.url, "https://lastfm.example/a.png");
-        assert_eq!(cover.uv, FULL_IMAGE);
     }
 }

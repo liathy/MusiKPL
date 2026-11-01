@@ -197,13 +197,21 @@ impl Taste {
         best(genres.into_iter().collect(), limit)
     }
 
-    /// The user's best-loved song by an artist, to start a mix from.
-    pub(crate) fn favorite_song_by(&self, artist: &str, now: u64) -> Option<Track> {
-        self.songs
+    /// The user's best-loved songs by an artist, best first, to start a
+    /// mix from.
+    pub(crate) fn favorite_songs_by(&self, artist: &str, now: u64, limit: usize) -> Vec<Track> {
+        let mut songs: Vec<(&SongStats, f64)> = self
+            .songs
             .values()
             .filter(|song| song_info(&song.track).artist.eq_ignore_ascii_case(artist))
-            .max_by(|a, b| a.score(now).total_cmp(&b.score(now)))
-            .map(|song| song.track.clone())
+            .map(|song| (song, song.score(now)))
+            .collect();
+        songs.sort_by(|a, b| b.1.total_cmp(&a.1));
+        songs
+            .into_iter()
+            .take(limit)
+            .map(|(song, _)| song.track.clone())
+            .collect()
     }
 
     pub(crate) fn recently_played(&self, limit: usize) -> Vec<Track> {

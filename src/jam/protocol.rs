@@ -4,8 +4,9 @@ use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 
-/// Version 2 added discovery, snapshot reasons/speed, and guest requests.
-pub(crate) const PROTOCOL_VERSION: u16 = 2;
+/// Version 2 added discovery, snapshot reasons/speed, and guest requests;
+/// version 3 shares the host's queue and adds guests' songs to it directly.
+pub(crate) const PROTOCOL_VERSION: u16 = 3;
 pub(crate) const DISCOVERY_APP: &str = "musikpl-jam";
 pub(crate) const MAX_NAME_CHARS: usize = 32;
 pub(crate) const MAX_TEXT_CHARS: usize = 200;
@@ -115,6 +116,9 @@ pub(crate) enum Message {
     },
     /// Host-authoritative request list, sent to every guest when it changes.
     Requests(Vec<RequestEntry>),
+    /// The host's play queue (next songs, in order), sent to every guest
+    /// when it changes, so guests see what the host sees.
+    Queue(Vec<TrackRef>),
     Leave,
     SessionEnded,
     Error {

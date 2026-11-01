@@ -73,6 +73,8 @@ fn install_files() -> Result<PathBuf, String> {
     let exe = dir.join(install::EXE_NAME);
     let new = dir.join("MusiKPL.exe.new");
     std::fs::write(&new, PAYLOAD).map_err(|e| format!("Couldn't write MusiKPL.exe ({e})"))?;
+    // An open MusiKPL locks its exe: close it (it saves everything first).
+    install::close_running(&exe);
     // MusiKPL may take a moment to let go of its exe after closing.
     let mut attempt = 0;
     loop {
@@ -260,7 +262,7 @@ impl Setup {
             heading(ui, &format!("Update MusiKPL to {VERSION}"));
             note(
                 ui,
-                "MusiKPL is already installed. Your music history, likes, Home and settings are kept.",
+                "MusiKPL is already installed. If it's open, it closes to update. Your music history, likes, playlists and settings are kept.",
                 SECONDARY,
             );
         } else {

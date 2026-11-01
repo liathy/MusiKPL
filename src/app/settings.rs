@@ -53,7 +53,6 @@ impl YtMusicApp {
     pub(super) fn poll_lastfm(&mut self) {
         for event in self.lastfm.poll() {
             match event {
-                LastFmEvent::AlbumArt { video_id, url } => self.cover_art.insert(video_id, url),
                 LastFmEvent::Tags { video_id, tags } => self.receive_tags(&video_id, tags),
                 LastFmEvent::Failed(message) => {
                     let error = AppError::LastFm(message);
@@ -146,6 +145,7 @@ impl YtMusicApp {
         let view = SettingsView {
             page: self.settings_page,
             start_with_windows: self.settings.start_with_windows,
+            auto_mix: self.auto_mix,
             lastfm,
             error: self.settings_error.as_deref(),
         };
@@ -167,6 +167,7 @@ impl YtMusicApp {
     fn apply_settings_action(&mut self, action: SettingsAction) {
         match action {
             SettingsAction::Close => self.settings_open = false,
+            SettingsAction::SetAutoMix(enabled) => self.set_auto_mix(enabled),
             SettingsAction::ClearHistory => {
                 self.clear_taste();
                 self.settings_error = None;
@@ -191,10 +192,6 @@ impl YtMusicApp {
                 let api_secret = self.lastfm_secret_draft.trim().to_owned();
                 self.lastfm_key_draft.clone_from(&api_key);
                 self.lastfm_secret_draft.clone_from(&api_secret);
-                // A new key may know different songs; look covers up again.
-                if api_key != self.settings.lastfm.api_key {
-                    self.cover_art = Default::default();
-                }
                 self.settings.lastfm.api_key.clone_from(&api_key);
                 self.settings.lastfm.api_secret.clone_from(&api_secret);
                 self.settings.lastfm.session_key.clear();

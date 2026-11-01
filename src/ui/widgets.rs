@@ -385,6 +385,7 @@ pub(crate) fn elided(
     color: Color32,
     align: Align2,
 ) {
+    crate::ui::fonts::cover(painter.ctx(), text);
     let mut job = LayoutJob::single_section(
         text.to_owned(),
         TextFormat {
@@ -500,6 +501,7 @@ pub(crate) fn marquee(
     color: Color32,
     r: &ResponsiveUi,
 ) {
+    crate::ui::fonts::cover(ui.ctx(), text);
     let galley = ui.painter().layout_no_wrap(text.to_owned(), font, color);
     let overflow = galley.size().x - rect.width();
     let distance = if overflow > 0.5 {

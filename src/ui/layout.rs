@@ -14,7 +14,7 @@ pub(crate) struct WindowLayout {
 
 pub(crate) fn window_layout(window: Rect, r: &ResponsiveUi) -> WindowLayout {
     let top = (window.top() + r.rem(3.75)).min(window.bottom());
-    let footer_top = (window.bottom() - r.rem(10.625)).max(top);
+    let footer_top = (window.bottom() - r.rem(6.5)).max(top);
     WindowLayout {
         top_bar: Rect::from_min_max(window.min, pos2(window.right(), top)),
         main: Rect::from_min_max(pos2(window.left(), top), pos2(window.right(), footer_top)),
@@ -86,8 +86,8 @@ mod tests {
         let (window, r) = design();
         let layout = window_layout(window, &r);
         assert_eq!(layout.top_bar.height(), 60.0);
-        assert_eq!(layout.main.height(), 794.0);
-        assert_eq!(layout.footer.height(), 170.0);
+        assert_eq!(layout.main.height(), 860.0);
+        assert_eq!(layout.footer.height(), 104.0);
         assert_eq!(layout.footer.bottom(), window.bottom());
     }
 
@@ -97,7 +97,7 @@ mod tests {
         let r = ResponsiveUi::from_size(window.size());
         let layout = window_layout(window, &r);
         assert!((layout.top_bar.height() - 45.0).abs() < 0.01);
-        assert!((layout.footer.height() - 127.5).abs() < 0.01);
+        assert!((layout.footer.height() - 78.0).abs() < 0.01);
         let total = layout.top_bar.height() + layout.main.height() + layout.footer.height();
         assert!((total - window.height()).abs() < 0.01);
     }

@@ -7,7 +7,7 @@ use crate::{
     domain::Track,
     jam::{
         self, DiscoveryStatus, DriftAction, JamEvent, LoadStatus, NearbyJam, PlaybackSnapshot,
-        PlaybackState, Progress, Role, SyncReason, TrackRef,
+        PlaybackState, Progress, RequestStatus, Role, SyncReason, TrackRef, SHARED_QUEUE,
     },
     ui::jam::{
         self as jam_ui, DiscoveryView, InternetView, JamAction, JamView, NearbyView, RequestView,
@@ -82,7 +82,10 @@ impl YtMusicApp {
             }
         }
         match self.jam.info.role {
-            Some(Role::Host) => self.publish_host_playback(),
+            Some(Role::Host) => {
+                self.publish_host_playback();
+                self.share_host_queue();
+            }
             Some(Role::Guest) => self.follow_host(),
             None => {}
         }
@@ -438,13 +441,42 @@ impl YtMusicApp {
         self.player.seek(position);
         self.jam_sync.last_seek = Some(Instant::now());
     }
-    /// Guest: suggest a track to the host instead of playing it locally.
+    /// Host: listeners add songs straight to the queue (their requests are
+    /// accepted as they arrive), and everyone sees the same queue.
+    fn share_host_queue(&mut self) {
+        let pending: Vec<u64> = self
+            .jam
+            .requests()
+            .iter()
+            .filter(|entry| entry.status == RequestStatus::Pending)
+            .map(|entry| entry.id)
+            .collect();
+        for id in pending {
+            if let Some(track) = self.jam.accept_request(id) {
+                self.add_to_queue(track_from(&track));
+            }
+        }
+        let queue = self
+            .queue
+            .iter()
+            .take(SHARED_QUEUE)
+            .filter_map(track_ref)
+            .collect();
+        self.jam.share_queue(queue);
+    }
+
+    /// Guest: the host's queue, as the host sees it.
+    pub(super) fn jam_queue(&self) -> Vec<Track> {
+        self.jam.queue().iter().map(track_from).collect()
+    }
+
+    /// Guest: add a track to the host's queue instead of playing it locally.
     pub(super) fn request_from_host(&mut self, track: &Track) {
         let result = track_ref(track)
-            .ok_or_else(|| "That track can't be requested".to_string())
+            .ok_or_else(|| "That track can't be added".to_string())
             .and_then(|track| self.jam.request_track(track));
         self.set_jam_notice(match result {
-            Ok(()) => format!("Requested \"{}\"", track.title),
+            Ok(()) => format!("Added \"{}\" to the Jam queue", track.title),
             Err(error) => error,
         });
     }

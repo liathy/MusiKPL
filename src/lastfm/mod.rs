@@ -1,4 +1,4 @@
-//! Last.fm: connecting an account, scrobbling, and album-art lookups.
+//! Last.fm: connecting an account, scrobbling, and genre lookups.
 //!
 //! All network calls run on background threads; the app submits jobs and
 //! polls for events once per frame, like the yt-dlp workers.
@@ -9,7 +9,7 @@ mod scrobble;
 pub(crate) use api::Credentials;
 pub(crate) use scrobble::{ScrobbleStep, ScrobbleTracker};
 
-/// MusiKPL's own read-only Last.fm API key, used for genres and covers when
+/// MusiKPL's own read-only Last.fm API key, used for genres when
 /// the user hasn't entered one. It comes from `lastfm-api-key.txt` (ignored
 /// by git) when building; an API key alone can't scrobble or reach
 /// accounts.
@@ -38,7 +38,7 @@ use crate::{domain::SongInfo, infrastructure::system};
 /// How long to wait for the user to approve MusiKPL in the browser.
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(300);
 const APPROVAL_POLL: Duration = Duration::from_secs(3);
-/// Spacing between album-art lookups, well inside Last.fm's rate limit.
+/// Spacing between genre lookups, well inside Last.fm's rate limit.
 const LOOKUP_SPACING: Duration = Duration::from_millis(250);
 
 pub(crate) enum LastFmJob {
@@ -53,11 +53,6 @@ pub(crate) enum LastFmJob {
         started_at: u64,
         duration: Option<f64>,
     },
-    AlbumArt {
-        api_key: String,
-        video_id: String,
-        song: SongInfo,
-    },
     /// The song's genres, for the taste profile.
     Tags {
         api_key: String,
@@ -68,10 +63,6 @@ pub(crate) enum LastFmJob {
 
 #[derive(Debug)]
 pub(crate) enum LastFmEvent {
-    AlbumArt {
-        video_id: String,
-        url: Option<String>,
-    },
     /// Raw Last.fm tags (possibly none); `None` when the lookup failed.
     Tags {
         video_id: String,
@@ -201,16 +192,6 @@ fn run_jobs(jobs: &Receiver<LastFmJob>, events: &Sender<LastFmEvent>) {
             } => api::scrobble(&credentials, &song, started_at, duration)
                 .err()
                 .map(LastFmEvent::Failed),
-            LastFmJob::AlbumArt {
-                api_key,
-                video_id,
-                song,
-            } => {
-                // A failed lookup simply keeps the YouTube thumbnail.
-                let url = api::album_art(&api_key, &song).ok().flatten();
-                thread::sleep(LOOKUP_SPACING);
-                Some(LastFmEvent::AlbumArt { video_id, url })
-            }
             LastFmJob::Tags {
                 api_key,
                 video_id,

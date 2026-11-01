@@ -261,6 +261,7 @@ fn search_field(
     r: &ResponsiveUi,
 ) -> bool {
     let id = Id::new("search_field");
+    fonts::cover(ui.ctx(), search);
     let focused = ui.memory(|memory| memory.has_focus(id));
     let hovered = ui.rect_contains_pointer(pill);
     let t = ui

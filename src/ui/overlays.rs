@@ -7,18 +7,22 @@ use eframe::egui::{
 };
 
 use crate::{
-    domain::{CoverArt, Track},
+    domain::{CoverArt, Playlists, Track},
     theme::Theme,
     ui::{
         fonts,
-        icons::IconTextures,
-        jam::{self, JamAction, JamView},
+        icons::{paint_icon, IconTextures},
+        jam::{self, JamAction, JamPanelState, JamView},
         layout::{modal_rect, Side},
+        menu::{
+            add_to_playlist_menu, playlist_list, section_card, PlaylistItem, PlaylistItemAction,
+            PlaylistTarget,
+        },
         responsive::ResponsiveUi,
         widgets::{
-            self, caps_label, checkbox_row, elided, hover_amount, icon_button, item_id, mix,
-            pill_button, pointer_amount, spinner, text_field, toggle, ButtonColors, FieldOptions,
-            PillKind, PillSize,
+            self, caps_label, elided, hover_amount, icon_button, item_id, mix, pill_button,
+            pointer_amount, spinner, text_field, toggle, ButtonColors, FieldOptions, PillKind,
+            PillSize,
         },
     },
 };
@@ -175,10 +179,13 @@ fn drawer_header(
 pub(crate) enum MenuAction {
     Close,
     OpenSettings,
-    ToggleAutoMix,
     Jam(JamAction),
     CheckForUpdates,
     InstallUpdate,
+    NewPlaylist,
+    Playlist(PlaylistItemAction),
+    TogglePlaylists,
+    ToggleJam,
 }
 
 /// Where updating MusiKPL stands, for the bottom of the menu.
@@ -193,9 +200,22 @@ pub(crate) enum UpdateView<'a> {
 }
 
 pub(crate) struct MenuView<'a> {
-    pub(crate) auto_mix: bool,
     pub(crate) jam: JamView<'a>,
+    pub(crate) jam_open: bool,
+    pub(crate) playlists: Vec<PlaylistItem<'a>>,
+    pub(crate) playlists_open: bool,
     pub(crate) update: UpdateView<'a>,
+}
+
+/// A few words on the Jam for its collapsed card.
+fn jam_summary(view: &JamView<'_>) -> String {
+    match view.state {
+        JamPanelState::Inactive => "Listen together".into(),
+        JamPanelState::Connecting => "Connecting…".into(),
+        JamPanelState::Hosting { listeners: 0 } => "Live · waiting for friends".into(),
+        JamPanelState::Hosting { listeners } => format!("Live · {listeners} listening"),
+        JamPanelState::Joined => format!("With {}", view.host_name),
+    }
 }
 
 /// The menu, docked on the left of `main`. `open` slides it in.
@@ -233,22 +253,48 @@ pub(crate) fn show_menu(
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .max_height((ui.available_height() - update_height).max(0.0))
+                // Scrolls with the wheel, without a bar.
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                 .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = r.rem(1.0);
-                    if checkbox_row(ui, icons, view.auto_mix, "Auto Mix", r)
-                        .on_hover_text(
-                            "Keep the queue filled with songs like the one playing, leaning toward your taste",
-                        )
-                        .clicked()
-                    {
-                        actions.push(MenuAction::ToggleAutoMix);
-                    }
-                    divider(ui);
-                    actions.extend(
-                        jam::show(ui, &view.jam, jam_invite, r)
-                            .into_iter()
-                            .map(MenuAction::Jam),
+                    ui.spacing_mut().item_spacing.y = r.rem(0.75);
+                    let count = view.playlists.len();
+                    let mut playlist_actions = Vec::new();
+                    let card = section_card(
+                        ui,
+                        "playlists",
+                        &icons.playlist,
+                        "Playlists",
+                        &count.to_string(),
+                        view.playlists_open,
+                        &[(&icons.add, "New playlist")],
+                        icons,
+                        r,
+                        |ui| playlist_actions = playlist_list(ui, &view.playlists, icons, r),
                     );
+                    if card.extra_clicked.is_some() {
+                        actions.push(MenuAction::NewPlaylist);
+                    } else if card.toggled {
+                        actions.push(MenuAction::TogglePlaylists);
+                    }
+                    actions.extend(playlist_actions.into_iter().map(MenuAction::Playlist));
+
+                    let mut jam_actions = Vec::new();
+                    let card = section_card(
+                        ui,
+                        "jam",
+                        &icons.music,
+                        "Jam",
+                        &jam_summary(&view.jam),
+                        view.jam_open,
+                        &[],
+                        icons,
+                        r,
+                        |ui| jam_actions = jam::show(ui, &view.jam, jam_invite, r),
+                    );
+                    if card.toggled {
+                        actions.push(MenuAction::ToggleJam);
+                    }
+                    actions.extend(jam_actions.into_iter().map(MenuAction::Jam));
                 });
             divider(ui);
             update_section(ui, &view.update, r, &mut actions);
@@ -355,6 +401,8 @@ pub(crate) enum QueueAction {
     Close,
     Play(Track),
     Remove(usize),
+    AddToPlaylist(Track, PlaylistTarget),
+    ToggleLike(Track),
 }
 
 pub(crate) struct QueueView<'a> {
@@ -363,6 +411,8 @@ pub(crate) struct QueueView<'a> {
     pub(crate) mixing: bool,
     pub(crate) guest: bool,
     pub(crate) covers: &'a CoverArt,
+    pub(crate) playlists: &'a Playlists,
+    pub(crate) liked: &'a dyn Fn(&str) -> bool,
 }
 
 /// The queue, docked on the right of `main`. `open` slides it in.
@@ -435,7 +485,7 @@ pub(crate) fn show_queue(
                     ui.spacing_mut().item_spacing.y = r.rem(0.125);
                     if view.queue.is_empty() {
                         let message = if view.guest {
-                            "The host controls the queue. Press + on a song to request it."
+                            "Songs you and the host add appear here. Press + on a song to add it."
                         } else {
                             "Songs you add, and Auto Mix picks, appear here."
                         };
@@ -457,8 +507,8 @@ pub(crate) fn show_queue(
     actions
 }
 
-/// One queue row. Clicking plays it; hovering shows a remove button in
-/// place of the duration.
+/// One queue row. Clicking plays it; hovering shows like, add to playlist,
+/// and remove buttons in place of the length.
 #[allow(clippy::too_many_arguments)]
 fn queue_item(
     ui: &mut Ui,
@@ -471,16 +521,17 @@ fn queue_item(
     actions: &mut Vec<QueueAction>,
 ) {
     let theme = Theme::default();
-    let clickable = index.is_some() && !view.guest;
-    let (rect, row) = ui.allocate_exact_size(
-        vec2(ui.available_width(), r.rem(4.0)),
-        if clickable {
-            Sense::click()
-        } else {
-            Sense::hover()
-        },
-    );
+    // Always senses clicks, so the right-click menu works on every row.
+    let (rect, row) =
+        ui.allocate_exact_size(vec2(ui.available_width(), r.rem(4.0)), Sense::click());
     let hover = pointer_amount(ui, &row);
+    let mut added_to = None;
+    row.context_menu(|ui| {
+        added_to = add_to_playlist_menu(ui, view.playlists, &track.id, r);
+    });
+    if let Some(target) = added_to {
+        actions.push(QueueAction::AddToPlaylist(track.clone(), target));
+    }
     let base = if now_playing {
         theme.surface
     } else {
@@ -508,7 +559,33 @@ fn queue_item(
         r.rem(0.375),
     );
 
-    let trailing = r.rem(2.75);
+    // On hover: ♥, add to playlist, and (for the host) remove. Otherwise
+    // the length, with a ♥ for liked songs.
+    // While this row's "add to playlist" menu is open, its buttons stay,
+    // even with the pointer over the menu instead of the row.
+    let menu_open = {
+        let key = format!(
+            "{}:{}",
+            index.map_or("now".into(), |i| i.to_string()),
+            track.id
+        );
+        let popup = item_id("queue_playlist_popup", &key);
+        ui.memory(|memory| memory.is_popup_open(popup))
+    };
+    let hovered = row.contains_pointer() || menu_open;
+    let removable = index.is_some() && !view.guest;
+    let button = r.rem(1.75);
+    let gap = r.rem(0.25);
+    let buttons = if hovered {
+        2 + usize::from(removable)
+    } else {
+        0
+    };
+    let trailing = if hovered {
+        buttons as f32 * (button + gap)
+    } else {
+        r.rem(4.25)
+    };
     let text_left = cover_rect.right() + r.rem(0.75);
     let text_rect = Rect::from_min_max(
         pos2(text_left, inner.top()),
@@ -538,46 +615,137 @@ fn queue_item(
         Align2::LEFT_CENTER,
     );
 
-    let trailing_rect = Rect::from_min_max(pos2(inner.right() - trailing, inner.top()), inner.max);
-    let removable = clickable && row.contains_pointer();
-    if let (true, Some(index)) = (removable, index) {
-        let button = Rect::from_center_size(trailing_rect.center(), r.rem2(1.75, 1.75));
-        let remove = ui.interact(
-            button,
-            item_id("queue_remove", &format!("{index}:{}", track.id)),
-            Sense::click(),
-        );
+    let liked = (view.liked)(&track.id);
+    let key = format!(
+        "{}:{}",
+        index.map_or("now".into(), |i| i.to_string()),
+        track.id
+    );
+    let slot = |n: usize| {
+        Rect::from_min_size(
+            pos2(
+                inner.right() - button * (n as f32 + 1.0) - gap * n as f32,
+                inner.center().y - button / 2.0,
+            ),
+            vec2(button, button),
+        )
+    };
+    let pointer = ui.input(|input| input.pointer.interact_pos());
+    let over = |rect: Rect| pointer.is_some_and(|pointer| rect.contains(pointer));
+    let mut on_button = false;
+    if hovered {
+        let mut next = 0;
+        if let (true, Some(index)) = (removable, index) {
+            let rect = slot(next);
+            next += 1;
+            let remove = ui.interact(rect, item_id("queue_remove", &key), Sense::click());
+            widgets::paint_icon_button(
+                ui,
+                rect,
+                &remove,
+                &icons.close,
+                r.rem2(0.875, 0.875),
+                button / 2.0,
+                ButtonColors::round(&theme),
+            );
+            let clicked = remove.clicked() || row.clicked();
+            remove
+                .on_hover_cursor(CursorIcon::PointingHand)
+                .on_hover_text("Remove from queue");
+            if clicked && over(rect) {
+                actions.push(QueueAction::Remove(index));
+                return;
+            }
+            on_button |= over(rect);
+        }
+
+        let rect = slot(next);
+        next += 1;
+        let add = ui.interact(rect, item_id("queue_playlist", &key), Sense::click());
         widgets::paint_icon_button(
             ui,
-            button,
-            &remove,
-            &icons.close,
-            r.rem2(0.875, 0.875),
-            r.rem(0.875),
+            rect,
+            &add,
+            &icons.playlist_add,
+            r.rem2(1.0, 1.0),
+            button / 2.0,
             ButtonColors::round(&theme),
         );
-        if remove
+        let popup = item_id("queue_playlist_popup", &key);
+        if (add.clicked() || row.clicked()) && over(rect) {
+            ui.memory_mut(|memory| memory.toggle_popup(popup));
+        }
+        on_button |= over(rect);
+        let add = add
             .on_hover_cursor(CursorIcon::PointingHand)
-            .on_hover_text("Remove from queue")
-            .clicked()
-        {
-            actions.push(QueueAction::Remove(index));
+            .on_hover_text("Add to playlist");
+        let picked = egui::popup::popup_below_widget(
+            ui,
+            popup,
+            &add,
+            egui::PopupCloseBehavior::CloseOnClickOutside,
+            |ui| add_to_playlist_menu(ui, view.playlists, &track.id, r),
+        )
+        .flatten();
+        if let Some(target) = picked {
+            ui.memory_mut(|memory| memory.close_popup());
+            actions.push(QueueAction::AddToPlaylist(track.clone(), target));
+        }
+
+        let rect = slot(next);
+        let heart = ui.interact(rect, item_id("queue_like", &key), Sense::click());
+        let mut colors = ButtonColors::round(&theme);
+        if liked {
+            colors.icon = theme.like;
+            colors.hover_icon = theme.like;
+        }
+        widgets::paint_icon_button(
+            ui,
+            rect,
+            &heart,
+            if liked {
+                &icons.heart_filled
+            } else {
+                &icons.heart
+            },
+            r.rem2(0.9375, 0.9375),
+            button / 2.0,
+            colors,
+        );
+        let clicked = heart.clicked() || row.clicked();
+        heart
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_text(if liked { "Unlike" } else { "Like" });
+        if clicked && over(rect) {
+            actions.push(QueueAction::ToggleLike(track.clone()));
             return;
         }
+        on_button |= over(rect);
     } else {
         ui.painter().text(
-            pos2(trailing_rect.right(), trailing_rect.center().y),
+            pos2(inner.right(), inner.center().y),
             Align2::RIGHT_CENTER,
             track.duration_text(),
             fonts::body(r.rem(0.8125)),
             theme.secondary_text,
         );
+        if liked {
+            paint_icon(
+                ui.painter(),
+                &icons.heart_filled,
+                Rect::from_center_size(
+                    pos2(inner.right() - r.rem(3.25), inner.center().y),
+                    r.rem2(0.75, 0.75),
+                ),
+                theme.like,
+            );
+        }
     }
-    if clickable && row.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+    let clickable = index.is_some() && !view.guest;
+    if clickable && !on_button && row.on_hover_cursor(CursorIcon::PointingHand).clicked() {
         actions.push(QueueAction::Play(track.clone()));
     }
 }
-
 // ── Settings ────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -592,6 +760,7 @@ pub(crate) enum SettingsAction {
     Close,
     Page(SettingsPage),
     SetStartWithWindows(bool),
+    SetAutoMix(bool),
     LastFmConnect,
     LastFmCancel,
     LastFmDisconnect,
@@ -617,6 +786,7 @@ pub(crate) enum LastFmState<'a> {
 pub(crate) struct SettingsView<'a> {
     pub(crate) page: SettingsPage,
     pub(crate) start_with_windows: bool,
+    pub(crate) auto_mix: bool,
     pub(crate) lastfm: LastFmState<'a>,
     /// The latest problem to show on the current page.
     pub(crate) error: Option<&'a str>,
@@ -826,8 +996,36 @@ fn general_page(
     r: &ResponsiveUi,
     actions: &mut Vec<SettingsAction>,
 ) {
-    let theme = Theme::default();
     page_heading(ui, "General", None, r);
+    if switch_card(
+        ui,
+        "Start with Windows",
+        "Open MusiKPL automatically when you sign in to Windows.",
+        view.start_with_windows,
+        r,
+    ) {
+        actions.push(SettingsAction::SetStartWithWindows(
+            !view.start_with_windows,
+        ));
+    }
+    if switch_card(
+        ui,
+        "Auto Mix",
+        "Keep the queue filled with songs like the one playing, leaning toward your taste.",
+        view.auto_mix,
+        r,
+    ) {
+        actions.push(SettingsAction::SetAutoMix(!view.auto_mix));
+    }
+    history_card(ui, r, actions);
+    error_line(ui, view.error, r);
+}
+
+/// A setting with a title, a description, and an on/off switch. Returns
+/// true when the switch was clicked.
+fn switch_card(ui: &mut Ui, title: &str, description: &str, on: bool, r: &ResponsiveUi) -> bool {
+    let theme = Theme::default();
+    let mut clicked = false;
     egui::Frame::none()
         .fill(Color32::BLACK)
         .stroke(Stroke::new(1.0_f32, theme.border))
@@ -843,17 +1041,15 @@ fn general_page(
                         ui.vertical(|ui| {
                             ui.spacing_mut().item_spacing.y = r.rem(0.125);
                             ui.label(
-                                egui::RichText::new("Start with Windows")
+                                egui::RichText::new(title)
                                     .font(fonts::display(r.rem(1.125)))
                                     .color(theme.text),
                             );
                             ui.add(
                                 egui::Label::new(
-                                    egui::RichText::new(
-                                        "Open MusiKPL automatically when you sign in to Windows.",
-                                    )
-                                    .font(fonts::body(r.rem(0.875)))
-                                    .color(theme.secondary_text),
+                                    egui::RichText::new(description)
+                                        .font(fonts::body(r.rem(0.875)))
+                                        .color(theme.secondary_text),
                                 )
                                 .wrap(),
                             );
@@ -861,16 +1057,11 @@ fn general_page(
                     },
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if toggle(ui, view.start_with_windows, r).clicked() {
-                        actions.push(SettingsAction::SetStartWithWindows(
-                            !view.start_with_windows,
-                        ));
-                    }
+                    clicked = toggle(ui, on, r).clicked();
                 });
             });
         });
-    history_card(ui, r, actions);
-    error_line(ui, view.error, r);
+    clicked
 }
 
 /// Listening history, with a two-step Clear so one stray click can't wipe it.
@@ -956,7 +1147,7 @@ fn lastfm_page(
     page_heading(
         ui,
         "Last.fm",
-        Some("Connect your Last.fm account to scrobble the songs you listen to. Album covers come from Last.fm too when it knows the song."),
+        Some("Connect your Last.fm account to scrobble the songs you listen to."),
         r,
     );
     let editable = matches!(view.lastfm, LastFmState::Disconnected);

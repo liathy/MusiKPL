@@ -1,6 +1,7 @@
 mod history;
 pub(crate) mod home;
 mod mix;
+pub(crate) mod rng;
 pub(crate) mod taste;
 
 pub(crate) use history::History;

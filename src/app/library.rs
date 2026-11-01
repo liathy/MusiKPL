@@ -13,21 +13,23 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    domain::{song_info, Track},
+    domain::{song_info, Playlists, Track},
     infrastructure::storage,
     lastfm::{lookup_key, LastFmJob},
-    media::query_ytdlp,
+    media::query_ytdlp_limited,
     recommendations::{
-        home::{finish_row, plan_home, HomeCache, RowPlan, ROW_LEN},
+        home::{finish_row, plan_home, HomeCache, RowPlan},
+        rng::Rng,
         taste::{genres_from_tags, ListenTracker, Taste},
     },
 };
 
-use super::YtMusicApp;
+use super::{home_paging::HomePaging, YtMusicApp};
 
 const TASTE_FILE: &str = "taste.json";
 const SESSION_FILE: &str = "session.json";
 const HOME_FILE: &str = "home.json";
+const PLAYLISTS_FILE: &str = "playlists.json";
 /// How often changed data is written, genres are looked up, and Home is
 /// checked for staleness.
 const SAVE_INTERVAL: Duration = Duration::from_secs(10);
@@ -39,8 +41,8 @@ const TAG_RETRY: Duration = Duration::from_secs(300);
 const HOME_RETRY: Duration = Duration::from_secs(600);
 /// Queued songs kept in the session.
 const SESSION_QUEUE: usize = 100;
-/// Songs in the Liked and Recently played rows.
-const LOCAL_ROW: usize = ROW_LEN * 2;
+/// Songs kept for the Liked and Recently played rows, shown a page at a time.
+const LOCAL_ROW: usize = 200;
 
 /// Seconds since 1970, the clock taste and Home are stamped with.
 pub(super) fn unix_now() -> u64 {
@@ -61,11 +63,13 @@ struct Session {
 }
 
 /// Each planned Home row with the songs its sources returned.
-type HomeBuild = Vec<(RowPlan, Vec<Track>)>;
+pub(super) type HomeBuild = Vec<(RowPlan, Vec<Track>)>;
 
 #[derive(Default)]
 pub(super) struct Library {
     pub(super) taste: Taste,
+    pub(super) playlists: Playlists,
+    pub(super) playlists_changed: bool,
     listens: ListenTracker,
     /// Data was loaded from disk, so it may be saved back. Tests never set it.
     persist: bool,
@@ -79,6 +83,8 @@ pub(super) struct Library {
     pub(super) home: HomeCache,
     home_rx: Option<Receiver<HomeBuild>>,
     home_retry_at: Option<Instant>,
+    /// Loading more of Home as the user scrolls.
+    pub(super) paging: HomePaging,
     /// Liked and recently played songs, refreshed when taste changes.
     pub(super) liked: Vec<Track>,
     pub(super) recent: Vec<Track>,
@@ -113,6 +119,7 @@ impl YtMusicApp {
         self.library.persist = true;
         self.library.taste = storage::read(TASTE_FILE).unwrap_or_default();
         self.library.home = storage::read(HOME_FILE).unwrap_or_default();
+        self.library.playlists = storage::read(PLAYLISTS_FILE).unwrap_or_default();
         self.library.taste_changed();
         self.library.taste_changed = false;
         self.player.volume = self.settings.volume;
@@ -121,7 +128,8 @@ impl YtMusicApp {
             self.restore_session(session);
         }
         self.library.saved_session = serde_json::to_string(&self.session()).unwrap_or_default();
-        self.refresh_home(false);
+        // New recommendations on every start; the saved Home shows meanwhile.
+        self.refresh_home(true);
     }
 
     /// Show the last song, paused where it was left, without loading it:
@@ -221,6 +229,13 @@ impl YtMusicApp {
                 let _ = storage::write(TASTE_FILE, &self.library.taste);
             } else {
                 storage::write_in_background(TASTE_FILE, &self.library.taste);
+            }
+        }
+        if std::mem::take(&mut self.library.playlists_changed) {
+            if now {
+                let _ = storage::write(PLAYLISTS_FILE, &self.library.playlists);
+            } else {
+                storage::write_in_background(PLAYLISTS_FILE, &self.library.playlists);
             }
         }
         if std::mem::take(&mut self.library.settings_changed) {
@@ -331,28 +346,43 @@ impl YtMusicApp {
         if !self.settings.onboarded && !self.library.taste.has_history() {
             return;
         }
-        let plans = plan_home(&self.library.taste, &self.settings.favorite_genres, now);
+        let plans = plan_home(
+            &self.library.taste,
+            &self.settings.favorite_genres,
+            now,
+            &mut Rng::from_time(),
+        );
+        self.library.home_rx = Some(self.spawn_home_build(plans));
+    }
+
+    /// Search for each planned row's songs on a background thread, one
+    /// yt-dlp at a time so building Home never hogs the PC.
+    pub(super) fn spawn_home_build(&self, plans: Vec<RowPlan>) -> Receiver<HomeBuild> {
         let tools = self.tools.clone();
         let registry = self.registry.clone();
         let (sender, receiver) = mpsc::channel();
-        self.library.home_rx = Some(receiver);
-        // One yt-dlp at a time, so building Home never hogs the PC.
         std::thread::spawn(move || {
             let mut build = Vec::new();
             for plan in plans {
                 let mut candidates = Vec::new();
                 for source in &plan.sources {
-                    if let Ok(items) = query_ytdlp(&tools, source, true, &registry) {
+                    if let Ok(items) =
+                        query_ytdlp_limited(&tools, source, true, Some(30), &registry)
+                    {
                         candidates.extend(items);
-                    }
-                    if candidates.len() >= ROW_LEN * 2 {
-                        break;
                     }
                 }
                 build.push((plan, candidates));
             }
             let _ = sender.send(build);
         });
+        receiver
+    }
+
+    pub(super) fn save_home(&self) {
+        if self.library.persist {
+            storage::write_in_background(HOME_FILE, &self.library.home);
+        }
     }
 
     fn poll_home(&mut self) {
@@ -366,10 +396,26 @@ impl YtMusicApp {
         };
         self.library.home_rx = None;
         let now = unix_now();
+        // Prefer songs the previous Home didn't show, so it feels new.
+        let shown: HashSet<String> = self
+            .library
+            .home
+            .rows
+            .iter()
+            .flat_map(|row| row.tracks.iter().map(|track| track.id.clone()))
+            .collect();
+        let mut rng = Rng::from_time();
         let rows: Vec<_> = build
             .into_iter()
             .filter_map(|(plan, candidates)| {
-                finish_row(&plan, candidates, &self.library.taste, now)
+                finish_row(
+                    &plan,
+                    candidates,
+                    &self.library.taste,
+                    now,
+                    &shown,
+                    &mut rng,
+                )
             })
             .collect();
         if rows.is_empty() {
@@ -378,6 +424,7 @@ impl YtMusicApp {
             return;
         }
         self.library.home_retry_at = None;
+        self.library.paging = HomePaging::default();
         let old = std::mem::replace(
             &mut self.library.home,
             HomeCache {

@@ -539,7 +539,7 @@ fn show_joined(ui: &mut Ui, view: &JamView<'_>, r: &ResponsiveUi, actions: &mut 
     hint(ui, view.status, theme.secondary_text, r);
     hint(
         ui,
-        "The host controls playback. Press + on a song to request it.",
+        "The host controls playback. Press + on a song to add it to the queue.",
         theme.secondary_text,
         r,
     );

@@ -16,8 +16,6 @@ const AUTH_PAGE: &str = "https://www.last.fm/api/auth/";
 const TOKEN_NOT_AUTHORIZED: i64 = 14;
 /// `track.getInfo` answers this for songs Last.fm does not know.
 const TRACK_NOT_FOUND: i64 = 6;
-/// Last.fm's grey star placeholder, served when an album has no art.
-const PLACEHOLDER_IMAGE: &str = "2a96cbd8b46e442fc41c2b86b821562f";
 
 /// Everything needed to scrobble on behalf of the connected user.
 #[derive(Clone, Debug)]
@@ -238,25 +236,6 @@ pub(crate) fn scrobble(
     Ok(())
 }
 
-/// The song's album art, when Last.fm knows the track and has an image.
-pub(crate) fn album_art(api_key: &str, song: &SongInfo) -> Result<Option<String>, String> {
-    let params = vec![
-        ("method", "track.getInfo".into()),
-        ("api_key", api_key.into()),
-        ("artist", song.artist.clone()),
-        ("track", song.title.clone()),
-        ("autocorrect", "1".into()),
-    ];
-    match get(params) {
-        Ok(value) => Ok(pick_album_art(&value)),
-        Err(ApiError::Api {
-            code: TRACK_NOT_FOUND,
-            ..
-        }) => Ok(None),
-        Err(error) => Err(error.describe()),
-    }
-}
-
 /// The song's Last.fm tags (mostly genres), most used first; the artist's
 /// tags when the song has none. Read-only: needs just an API key.
 pub(crate) fn tags(api_key: &str, song: &SongInfo) -> Result<Vec<String>, String> {
@@ -302,23 +281,6 @@ fn tag_names(value: &Value) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-/// The largest real album image in a `track.getInfo` reply.
-fn pick_album_art(value: &Value) -> Option<String> {
-    let images = value.pointer("/track/album/image")?.as_array()?;
-    let url_of = |size: &str| {
-        images
-            .iter()
-            .find(|image| image.get("size").and_then(Value::as_str) == Some(size))
-            .and_then(|image| image.get("#text"))
-            .and_then(Value::as_str)
-            .filter(|url| url.starts_with("https://") && !url.contains(PLACEHOLDER_IMAGE))
-            .map(str::to_owned)
-    };
-    ["extralarge", "large", "medium"]
-        .into_iter()
-        .find_map(url_of)
 }
 
 #[cfg(test)]
@@ -373,25 +335,5 @@ mod tests {
         .unwrap();
         assert_eq!(tag_names(&value), ["hardstyle", "edm"]);
         assert!(tag_names(&Value::Null).is_empty());
-    }
-
-    #[test]
-    fn album_art_prefers_the_largest_real_image() {
-        let value: Value = serde_json::from_str(
-            r##"{"track":{"album":{"image":[
-                {"#text":"https://img/s.png","size":"small"},
-                {"#text":"https://img/l.png","size":"large"},
-                {"#text":"","size":"extralarge"}
-            ]}}}"##,
-        )
-        .unwrap();
-        assert_eq!(pick_album_art(&value), Some("https://img/l.png".into()));
-
-        let placeholder: Value = serde_json::from_str(&format!(
-            r##"{{"track":{{"album":{{"image":[{{"#text":"https://img/{PLACEHOLDER_IMAGE}.png","size":"extralarge"}}]}}}}}}"##
-        ))
-        .unwrap();
-        assert_eq!(pick_album_art(&placeholder), None);
-        assert_eq!(pick_album_art(&Value::Null), None);
     }
 }

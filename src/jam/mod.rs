@@ -70,6 +70,8 @@ pub(crate) struct JamController {
     clock_offset_ms: i64,
     requests: RequestQueue,
     guest_requests: Vec<RequestEntry>,
+    /// Guest: the host's queue. Host: the queue last shared.
+    queue: Vec<TrackRef>,
     /// Host: what each connected guest last reported about loading a track.
     guest_loads: HashMap<u64, (String, LoadStatus)>,
     participant_id: Option<u64>,
@@ -86,6 +88,7 @@ pub(crate) struct JamController {
 enum HubMsg {
     Publish(PlaybackSnapshot),
     Requests(Vec<RequestEntry>),
+    Queue(Vec<TrackRef>),
     SendTo {
         peer: u64,
         message: Message,
@@ -144,6 +147,7 @@ enum Wire {
     },
     Snapshot(PlaybackSnapshot),
     Requests(Vec<RequestEntry>),
+    Queue(Vec<TrackRef>),
     ClockOffset(i64),
     Reconnecting,
     Closed(String),
@@ -164,6 +168,7 @@ impl Default for JamController {
             clock_offset_ms: 0,
             requests: RequestQueue::default(),
             guest_requests: Vec::new(),
+            queue: Vec::new(),
             guest_loads: HashMap::new(),
             participant_id: None,
             discovery: None,
@@ -386,6 +391,7 @@ impl JamController {
         self.clock_offset_ms = 0;
         self.requests = RequestQueue::default();
         self.guest_requests.clear();
+        self.queue.clear();
         self.guest_loads.clear();
         self.participant_id = None;
         // Ending the Jam also ends its internet invite or connection.
@@ -457,6 +463,7 @@ impl JamController {
                     }
                 }
                 Wire::Requests(entries) => self.guest_requests = checked_requests(entries),
+                Wire::Queue(tracks) => self.queue = checked_queue(tracks),
                 Wire::ClockOffset(offset) => self.clock_offset_ms = offset,
                 Wire::Reconnecting => {
                     self.info.connecting = true;
@@ -527,6 +534,20 @@ impl JamController {
         } else {
             &self.guest_requests
         }
+    }
+
+    /// Guest: the host's queue. Host: the queue last shared with guests.
+    pub(crate) fn queue(&self) -> &[TrackRef] {
+        &self.queue
+    }
+
+    /// Host: share the play queue with guests when it changed.
+    pub(crate) fn share_queue(&mut self, queue: Vec<TrackRef>) {
+        if self.info.role != Some(Role::Host) || queue == self.queue {
+            return;
+        }
+        self.queue = queue;
+        self.send_hub(HubMsg::Queue(self.queue.clone()));
     }
 
     /// Guest: this device's ID in the session, to mark its own requests.
@@ -655,6 +676,7 @@ impl HostSession {
         let mut next_id = 1u64;
         let mut snapshot: Option<PlaybackSnapshot> = None;
         let mut requests: Vec<RequestEntry> = Vec::new();
+        let mut queue: Vec<TrackRef> = Vec::new();
         let broadcast = |peers: &HashMap<u64, Peer>, message: Message| {
             for peer in peers.values() {
                 let _ = peer.outgoing.send(message.clone());
@@ -708,6 +730,10 @@ impl HostSession {
                     broadcast(&peers, Message::Requests(next.clone()));
                     requests = next;
                 }
+                Ok(HubMsg::Queue(next)) => {
+                    broadcast(&peers, Message::Queue(next.clone()));
+                    queue = next;
+                }
                 Ok(HubMsg::SendTo { peer, message }) => {
                     if let Some(peer) = peers.get(&peer) {
                         let _ = peer.outgoing.send(message);
@@ -719,6 +745,7 @@ impl HostSession {
                         let _ = outgoing.send(Message::Snapshot(snapshot.clone()));
                     }
                     let _ = outgoing.send(Message::Requests(requests.clone()));
+                    let _ = outgoing.send(Message::Queue(queue.clone()));
                     peers.insert(id, Peer { name, outgoing });
                     let _ = self.wire.send(Wire::Peers(peers.len()));
                 }
@@ -1126,6 +1153,9 @@ fn guest_connection(
             Message::Requests(entries) => {
                 let _ = wire.send(Wire::Requests(entries));
             }
+            Message::Queue(tracks) => {
+                let _ = wire.send(Wire::Queue(tracks));
+            }
             Message::Pong {
                 client_clock_ms,
                 host_clock_ms,
@@ -1147,6 +1177,18 @@ fn guest_connection(
     };
     let _ = stream.shutdown(Shutdown::Both);
     end
+}
+
+/// Songs of the shared queue sent to guests, at most.
+pub(crate) const SHARED_QUEUE: usize = 50;
+
+/// Re-validate a queue received from the host.
+fn checked_queue(tracks: Vec<TrackRef>) -> Vec<TrackRef> {
+    tracks
+        .iter()
+        .take(SHARED_QUEUE)
+        .filter_map(checked_track)
+        .collect()
 }
 
 /// Re-validate a request list received from the host.
@@ -1485,6 +1527,33 @@ mod tests {
         // An unchanged state right away is not re-sent.
         host.publish(playing("song-b", 0.0, true));
         assert_eq!(host.latest_snapshot().unwrap().revision, 5);
+    }
+
+    #[test]
+    fn guests_see_the_hosts_queue_and_only_the_host_shares_it() {
+        let (mut host, address) = host();
+        let mut guest = joined_guest(&mut host, address);
+
+        host.share_queue(vec![track("one"), track("two")]);
+        wait_for(&mut [&mut host, &mut guest], |all| {
+            all[1].queue().len() == 2
+        });
+        assert_eq!(guest.queue()[1], track("two"));
+
+        // Changes reach guests; a guest can't push its own queue.
+        host.share_queue(vec![track("two")]);
+        wait_for(&mut [&mut host, &mut guest], |all| {
+            all[1].queue().len() == 1
+        });
+        guest.share_queue(vec![track("x")]);
+        assert_eq!(host.queue(), [track("two")]);
+
+        // A guest who joins later gets the queue right away.
+        let mut late = JamController::default();
+        late.connect(address, host.info.token.clone(), String::new());
+        wait_for(&mut [&mut host, &mut late], |all| {
+            !all[1].info.connecting && all[1].queue().len() == 1
+        });
     }
 
     #[test]
