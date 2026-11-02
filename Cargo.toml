@@ -1,6 +1,6 @@
 [package]
 name = "MusiKPL"
-version = "3.6.0"
+version = "3.6.1"
 edition = "2021"
 description = "A native, audio-only YouTube player powered by mpv and yt-dlp"
 license = "GPL-3.0-or-later"
