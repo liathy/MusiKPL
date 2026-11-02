@@ -42,7 +42,7 @@ import uniffi.musikpl_mobile.Shuffle
 
 /** The full player: cover, controls, and Up next (the queue). */
 @Composable
-fun PlayerSheet(nav: Nav, onClose: () -> Unit) {
+fun PlayerSheet(nav: Nav, onClose: () -> Unit, onLyrics: () -> Unit) {
     val player by Core.player.collectAsStateWithLifecycle()
     val queue by Core.queue.collectAsStateWithLifecycle()
     val state = player ?: return
@@ -50,8 +50,6 @@ fun PlayerSheet(nav: Nav, onClose: () -> Unit) {
     val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     // While dragging, the slider shows the finger, not the player.
     var dragging by remember { mutableStateOf<Float?>(null) }
-    var lyricsOpen by remember { mutableStateOf(false) }
-    if (lyricsOpen) LyricsSheet { lyricsOpen = false }
 
     ModalBottomSheet(onDismissRequest = onClose, sheetState = sheet, containerColor = Palette.background) {
         LazyColumn(contentPadding = PaddingValues(bottom = 32.dp)) {
@@ -80,7 +78,7 @@ fun PlayerSheet(nav: Nav, onClose: () -> Unit) {
                             size = 26.dp,
                         )
                         if (song != null) {
-                            IconAction(R.drawable.ic_lyrics, "Lyrics", { lyricsOpen = true }, size = 26.dp)
+                            IconAction(R.drawable.ic_lyrics, "Lyrics", onLyrics, size = 26.dp)
                             IconAction(R.drawable.ic_playlist_add, "Add to playlist", { nav.songMenu(song) }, size = 26.dp)
                         }
                     }

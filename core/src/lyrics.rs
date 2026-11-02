@@ -172,9 +172,12 @@ pub fn fetch(song: &SongInfo, duration: Option<f64>) -> Result<Option<Lyrics>, S
     // Then a search, by artist and title, then by words.
     let mut best_plain = None;
     let words = format!("{} {}", song.artist, song.title);
-    let searches: [&[(&str, &str)]; 2] = [
+    // Then the title alone: artist names are often spelled differently in
+    // another alphabet (Cyrillic, Japanese) than in the lyrics database.
+    let searches: [&[(&str, &str)]; 3] = [
         &[("artist_name", &song.artist), ("track_name", &song.title)],
         &[("q", &words)],
+        &[("track_name", &song.title)],
     ];
     for query in searches {
         let Some(Value::Array(results)) = call("/search", query)? else {

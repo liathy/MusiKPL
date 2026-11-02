@@ -59,16 +59,17 @@ impl Engine {
             match rx.try_recv() {
                 Ok(result) => {
                     self.lyrics.rx = None;
+                    // A lookup that could not finish (offline, service busy) is
+                    // reported as not found, so the sheet never waits forever.
                     self.lyrics.status = match result {
                         Ok(Some(found)) => LyricsStatus::Found(Arc::new(found)),
-                        Ok(None) => LyricsStatus::Missing,
-                        Err(error) => LyricsStatus::Failed(error),
+                        Ok(None) | Err(_) => LyricsStatus::Missing,
                     };
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.lyrics.rx = None;
-                    self.lyrics.status = LyricsStatus::Failed("Couldn't load the lyrics".into());
+                    self.lyrics.status = LyricsStatus::Missing;
                 }
             }
         }

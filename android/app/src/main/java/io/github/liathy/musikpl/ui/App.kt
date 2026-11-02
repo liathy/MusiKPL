@@ -97,6 +97,9 @@ fun App(onLeave: () -> Unit) {
     // An engine page (playlist, artist, profile) shows over the tab.
     var detail by rememberSaveable { mutableStateOf(false) }
     var playerOpen by rememberSaveable { mutableStateOf(false) }
+    // Lyrics belong to the app, not the player: they stay open, and close
+    // on back or a tab change, even when the player is closed.
+    var lyricsOpen by rememberSaveable { mutableStateOf(false) }
     var menuSong by remember { mutableStateOf<Song?>(null) }
     var menuLastFm by remember { mutableStateOf<Pair<String, String>?>(null) }
     val snackbar = remember { SnackbarHostState() }
@@ -119,6 +122,7 @@ fun App(onLeave: () -> Unit) {
                 tab = it
                 detail = false
                 playerOpen = false
+                lyricsOpen = false
                 if (it == Tab.Home) Core.act { goHome() }
             },
         )
@@ -126,6 +130,7 @@ fun App(onLeave: () -> Unit) {
 
     BackHandler(enabled = true) {
         when {
+            lyricsOpen -> lyricsOpen = false
             playerOpen -> playerOpen = false
             detail -> Core.act { goBack() }
             tab != Tab.Home -> nav.goTo(Tab.Home)
@@ -179,7 +184,10 @@ fun App(onLeave: () -> Unit) {
     }
 
     if (playerOpen) {
-        PlayerSheet(nav, onClose = { playerOpen = false })
+        PlayerSheet(nav, onClose = { playerOpen = false }, onLyrics = { lyricsOpen = true })
+    }
+    if (lyricsOpen) {
+        LyricsSheet(onClose = { lyricsOpen = false })
     }
     InvitePopup()
     DeviceLinkPopup()
