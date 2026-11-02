@@ -102,6 +102,7 @@ fn panel<R>(
 /// beside it. `rect` may extend past `visible` while it slides in.
 fn docked<R>(
     ui: &mut Ui,
+    name: &str,
     rect: Rect,
     visible: Rect,
     side: Side,
@@ -110,23 +111,33 @@ fn docked<R>(
 ) -> R {
     let theme = Theme::default();
     let clip = rect.intersect(visible);
-    let painter = ui.painter_at(clip);
-    painter.rect_filled(rect, 0.0, theme.panel);
-    let edge = match side {
-        Side::Left => [rect.right_top(), rect.right_bottom()],
-        Side::Right => [rect.left_top(), rect.left_bottom()],
-    };
-    painter.line_segment(edge, Stroke::new(1.0_f32, theme.border));
-    ui.allocate_new_ui(
-        egui::UiBuilder::new()
-            .max_rect(rect.shrink(padding))
-            .layout(egui::Layout::top_down(egui::Align::Min)),
-        |ui| {
-            ui.set_clip_rect(clip);
-            content(ui)
-        },
-    )
-    .inner
+    // Its own layer, above the page: the wheel then scrolls only the panel
+    // under the pointer, not the page or the other panel behind it.
+    egui::Area::new(Id::new(("docked", name)))
+        .order(Order::Middle)
+        .fixed_pos(rect.min)
+        .show(ui.ctx(), |ui| {
+            let painter = ui.painter_at(clip);
+            painter.rect_filled(rect, 0.0, theme.panel);
+            let edge = match side {
+                Side::Left => [rect.right_top(), rect.right_bottom()],
+                Side::Right => [rect.left_top(), rect.left_bottom()],
+            };
+            painter.line_segment(edge, Stroke::new(1.0_f32, theme.border));
+            // The panel owns its rectangle, so clicks never reach the page.
+            ui.allocate_exact_size(rect.size(), Sense::click());
+            ui.allocate_new_ui(
+                egui::UiBuilder::new()
+                    .max_rect(rect.shrink(padding))
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+                |ui| {
+                    ui.set_clip_rect(clip);
+                    content(ui)
+                },
+            )
+        })
+        .inner
+        .inner
 }
 
 /// Width of the docked menu and queue.
@@ -255,7 +266,7 @@ pub(crate) fn show_menu(
     let width = menu_width(r);
     let left = main.left() - width * (1.0 - open);
     let rect = Rect::from_min_size(pos2(left, main.top()), vec2(width, main.height()));
-    docked(ui, rect, main, Side::Left, r.rem(1.25), |ui| {
+    docked(ui, "menu", rect, main, Side::Left, r.rem(1.25), |ui| {
         ui.set_opacity(open);
         {
             ui.spacing_mut().item_spacing.y = r.rem(1.0);
@@ -565,7 +576,7 @@ pub(crate) fn show_queue(
     let width = queue_width(r);
     let left = main.right() - width * open;
     let rect = Rect::from_min_size(pos2(left, main.top()), vec2(width, main.height()));
-    docked(ui, rect, main, Side::Right, r.rem(1.25), |ui| {
+    docked(ui, "queue", rect, main, Side::Right, r.rem(1.25), |ui| {
         ui.set_opacity(open);
         {
             ui.spacing_mut().item_spacing.y = r.rem(0.75);
@@ -1036,13 +1047,19 @@ pub(crate) fn show_settings(
                 ),
             );
             ui.allocate_new_ui(egui::UiBuilder::new().max_rect(body), |ui| {
-                ui.spacing_mut().item_spacing.y = r.rem(1.5);
-                match view.page {
-                    SettingsPage::General => general_page(ui, view, r, &mut actions),
-                    SettingsPage::LastFm => {
-                        lastfm_page(ui, view, api_key, api_secret, r, &mut actions)
-                    }
-                }
+                // The page is longer than the window on small screens, so it
+                // scrolls with the wheel, like the menu and the queue.
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = r.rem(1.5);
+                        match view.page {
+                            SettingsPage::General => general_page(ui, view, r, &mut actions),
+                            SettingsPage::LastFm => {
+                                lastfm_page(ui, view, api_key, api_secret, r, &mut actions)
+                            }
+                        }
+                    });
             });
         },
     );
