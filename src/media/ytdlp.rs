@@ -1,8 +1,9 @@
+use super::cookies;
 use crate::{
     domain::{Track, YtEntry},
     infrastructure::{
         bundled,
-        process::{hide_console, run_registered, ProcessRegistry},
+        process::{hide_console, ProcessRegistry},
     },
 };
 use std::{
@@ -165,19 +166,22 @@ fn run_query(
     limit: Option<usize>,
     registry: &ProcessRegistry,
 ) -> Result<Vec<Track>, String> {
-    let mut command = Command::new(&tools.yt_dlp);
-    hide_console(&mut command);
-    command.args([
-        "--dump-json",
-        "--skip-download",
-        "--flat-playlist",
-        "--no-warnings",
-    ]);
-    if let Some(limit) = limit {
-        command.args(["--playlist-end", &limit.to_string()]);
-    }
-    command.arg(target);
-    let output = run_registered(command, registry)?;
+    let build = || {
+        let mut command = Command::new(&tools.yt_dlp);
+        hide_console(&mut command);
+        command.args([
+            "--dump-json",
+            "--skip-download",
+            "--flat-playlist",
+            "--no-warnings",
+        ]);
+        if let Some(limit) = limit {
+            command.args(["--playlist-end", &limit.to_string()]);
+        }
+        command.arg(target);
+        command
+    };
+    let output = cookies::run_yt_dlp(&build, registry)?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
@@ -230,6 +234,11 @@ pub(crate) fn resolve_audio_url(
         Ok(url) => return Ok(url),
         Err(error) => error,
     };
+    // Other uploads would hit the same bot check, and asking for them adds
+    // to the requests that caused it.
+    if cookies::is_bot_check(&error) {
+        return Err(plain_error(&error));
+    }
     // Look for the same song uploaded by someone else, about as long.
     let song = crate::domain::song_info(track);
     let query = if song.artist.is_empty() {
@@ -268,20 +277,23 @@ fn resolve_upload(tools: &Tools, url: &str, registry: &ProcessRegistry) -> Resul
         (Some("youtube:player_client=android"), "bestaudio"),
         (None, "bestaudio/best"),
     ] {
-        let mut command = Command::new(&tools.yt_dlp);
-        hide_console(&mut command);
-        command.args([
-            "--get-url",
-            "--format",
-            format,
-            "--no-playlist",
-            "--no-warnings",
-            url,
-        ]);
-        if let Some(client) = client {
-            command.args(["--extractor-args", client]);
-        }
-        let output = run_registered(command, registry)?;
+        let build = || {
+            let mut command = Command::new(&tools.yt_dlp);
+            hide_console(&mut command);
+            command.args([
+                "--get-url",
+                "--format",
+                format,
+                "--no-playlist",
+                "--no-warnings",
+                url,
+            ]);
+            if let Some(client) = client {
+                command.args(["--extractor-args", client]);
+            }
+            command
+        };
+        let output = cookies::run_yt_dlp(&build, registry)?;
         if output.status.success() {
             if let Some(url) = String::from_utf8_lossy(&output.stdout)
                 .lines()
@@ -306,8 +318,12 @@ pub(crate) fn plain_error(error: &str) -> String {
         || lower.contains("inappropriate for some users")
     {
         "This video is age-restricted on YouTube"
-    } else if lower.contains("not a bot") {
-        "YouTube wants to confirm MusiKPL isn't a bot (too many requests from your connection). Try again in a few minutes"
+    } else if cookies::is_bot_check(&lower) {
+        return if cookies::have_saved() {
+            "YouTube wants to confirm MusiKPL isn't a bot (too many requests from your connection), even with your browser's YouTube sign-in. Try again in a few minutes.".into()
+        } else {
+            "YouTube wants to confirm MusiKPL isn't a bot (too many requests from your connection). Sign in to YouTube in Helium or Firefox, then close the browser once so MusiKPL can save that sign-in, or try again in a few minutes.".into()
+        };
     } else if lower.contains("not available in your country")
         || lower.contains("blocked it in your country")
         || lower.contains("geo")

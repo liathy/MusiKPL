@@ -888,6 +888,10 @@ pub fn run() -> eframe::Result<()> {
                 app.tools.yt_dlp.clone(),
                 app.registry.clone(),
             );
+            crate::media::refresh_saved_in_background(
+                app.tools.yt_dlp.clone(),
+                app.registry.clone(),
+            );
             Ok(Box::new(app))
         }),
     )

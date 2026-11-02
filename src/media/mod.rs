@@ -1,4 +1,7 @@
+mod cookies;
 mod ytdlp;
+
+pub(crate) use cookies::refresh_saved_in_background;
 
 use musikpl_core::{domain::Track, extractor::Extractor};
 
